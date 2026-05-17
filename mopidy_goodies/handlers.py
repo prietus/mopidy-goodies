@@ -40,6 +40,7 @@ from tornado.web import HTTPError, RequestHandler
 from . import __version__, audio
 from .stats import db_path_from_config
 from .tidal import TidalBackendMissing, TidalNotLoggedIn, TidalUnavailable, get_session
+from .visualizer import VisualizerWebSocket, visualizer_active
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ def factory(config, core):
         (r"/stats/totals", StatsTotalsHandler, common),
         (r"/audio/output", AudioOutputHandler, common),
         (r"/audio/active", AudioActiveHandler, common),
+        (r"/audio/visualizer", VisualizerWebSocket, common),
     ]
 
 
@@ -122,6 +124,7 @@ class HealthHandler(_Base):
                 "favorites_active": tidal_active,
                 "stats": True,
                 "audio": True,
+                "visualizer": visualizer_active(self.config),
             },
         }))
 

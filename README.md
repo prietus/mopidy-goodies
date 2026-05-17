@@ -55,15 +55,19 @@ features to show in your client.
 
 ```json
 {
-  "version": "0.6.0",
+  "version": "0.7.0",
   "features": {
     "favorites": true,
     "favorites_active": true,
     "stats": true,
-    "audio": true
+    "audio": true,
+    "visualizer": false
   }
 }
 ```
+
+`visualizer` is `true` only when `[goodies] visualizer_fifo` points at a
+named pipe that exists. See [the visualizer section](#visualizer-feed-websocket).
 
 `favorites_active` is `false` when `mopidy-tidal` isn't loaded *or* isn't
 logged in. When clients hit the favorites endpoints in that state they get:
@@ -195,6 +199,66 @@ streamed in an `S32_LE` container reports `32` here). The source bit depth
 isn't recoverable from `/proc/asound`. `alsa_format` is the raw token, useful
 for distinguishing DSD (`DSD_U32_BE`) from PCM (`S32_LE`).
 
+### Visualizer feed (WebSocket)
+
+```
+WS /goodies/audio/visualizer
+```
+
+Streams raw PCM chunks from a named pipe to all connected clients, one
+binary WebSocket message per chunk (~4 KiB ≈ 23 ms at 44.1 kHz stereo).
+Clients run their own FFT — typical use is a spectrum/bar visualizer in
+mopytui (terminal) or mopyrust (Tauri).
+
+**Operator setup** (three steps; visualizer is opt-in):
+
+1. In `mopidy.conf`, branch `[audio] output` with a `tee` so one rama
+   drives `alsasink` (keep this one bit-perfect) and the other writes
+   PCM to a FIFO. Format on the FIFO branch is up to you, but `S16LE @
+   44100, stereo` is the convention clients assume:
+
+   ```ini
+   [audio]
+   output = tee name=t
+     t. ! queue ! alsasink device=hw:CARD=SABRE,DEV=0 buffer-time=200000
+     t. ! queue leaky=downstream max-size-buffers=200
+        ! audioconvert ! audioresample
+        ! audio/x-raw,format=S16LE,rate=44100,channels=2
+        ! filesink location=/tmp/mopidy.fifo sync=false
+   ```
+
+   (Same line in INI — wrapping is for readability.)
+
+2. Create the FIFO once:
+
+   ```sh
+   mkfifo /tmp/mopidy.fifo
+   ```
+
+3. Point goodies at it:
+
+   ```ini
+   [goodies]
+   visualizer_fifo = /tmp/mopidy.fifo
+   ```
+
+Restart Mopidy. `/goodies/_health` now reports `"visualizer": true`. The
+WS endpoint accepts connections immediately but only emits data while
+Mopidy is actually playing (no writer on the FIFO → reader blocks
+quietly, no error).
+
+**Caveats**:
+
+- The FIFO is **single-reader** at the kernel level; goodies opens it
+  once and fans out to every WS client, so multiple subscribers are fine
+  — but don't have another consumer (e.g. a local `cava`) opening the
+  same FIFO at the same time, or kernel splits the bytes between them.
+- The visualizer branch puts `audioresample`/`audioconvert` into the
+  pipeline, so `/goodies/audio/active` will report `verdict =
+  "not-bit-perfect"` even though the DAC's own branch is untouched. The
+  static chain check is text-based and can't tell that those elements
+  live on a side branch. Known limitation.
+
 ## Roadmap
 
 - **v0.1** — favorites.
@@ -202,10 +266,11 @@ for distinguishing DSD (`DSD_U32_BE`) from PCM (`S32_LE`).
 - **v0.3** — aggregated stats (top artists/albums/genres, day-of-week, hour-of-day).
 - **v0.4** — audio output device info.
 - **v0.5** — live ALSA params + bit-perfect chain analysis. (0.5.1 splits 503/403 for not-loaded vs not-logged-in.)
-- **v0.6** — package renamed `mopidy-tidal-goodies` → `mopidy-goodies`; ext_name `tidal_goodies` → `goodies`. *(current)*
-- **v0.7** — mutable Tidal playlists (create / add / remove / reorder).
-- **v0.8** — discovery: Your Mixes, mood radios.
-- **v0.9** — admin: force session refresh, cache stats.
+- **v0.6** — package renamed `mopidy-tidal-goodies` → `mopidy-goodies`; ext_name `tidal_goodies` → `goodies`.
+- **v0.7** — visualizer feed: WebSocket streaming raw PCM from a FIFO branch. *(current)*
+- **v0.8** — mutable Tidal playlists (create / add / remove / reorder).
+- **v0.9** — discovery: Your Mixes, mood radios.
+- **v0.10** — admin: force session refresh, cache stats.
 
 ## Migrating from `mopidy-tidal-goodies`
 
