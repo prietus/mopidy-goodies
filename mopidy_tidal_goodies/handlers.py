@@ -3,7 +3,9 @@
 Routes mounted under ``/tidal_goodies/`` (Mopidy http convention takes the
 ext_name as prefix). Two feature groups:
 
-  Tidal favorites — requires mopidy-tidal logged in. 503 if unavailable.
+  Tidal favorites — requires mopidy-tidal logged in. 503 if the backend
+  isn't loaded at all; 403 if it's loaded but the session is unauthenticated
+  (the operator needs to play a Tidal track in mopidy to trigger login).
 
       POST   /tidal_goodies/favorites/albums          { "id": "12345" }
       DELETE /tidal_goodies/favorites/albums/12345
@@ -37,7 +39,7 @@ from tornado.web import HTTPError, RequestHandler
 
 from . import __version__, audio
 from .stats import db_path_from_config
-from .tidal import TidalUnavailable, get_session
+from .tidal import TidalBackendMissing, TidalNotLoggedIn, TidalUnavailable, get_session
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,13 @@ class _Base(RequestHandler):
     def _session(self):
         try:
             return get_session(self.core)
+        except TidalNotLoggedIn as e:
+            # 403 rather than 503: it's not a transient service-side outage,
+            # it's that the upstream Tidal session is unauthenticated and the
+            # operator has to trigger mopidy-tidal's login flow.
+            raise HTTPError(403, reason=str(e))
+        except TidalBackendMissing as e:
+            raise HTTPError(503, reason=str(e))
         except TidalUnavailable as e:
             raise HTTPError(503, reason=str(e))
 

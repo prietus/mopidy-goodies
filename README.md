@@ -48,7 +48,7 @@ features to show in your client.
 
 ```json
 {
-  "version": "0.5.0",
+  "version": "0.5.1",
   "features": {
     "favorites": true,
     "favorites_active": true,
@@ -58,9 +58,15 @@ features to show in your client.
 }
 ```
 
-`favorites_active` is `false` when `mopidy-tidal` isn't loaded or isn't
-logged in — favorites endpoints will return `503` in that case. `stats`
-and `audio` work for any backend (independent of Tidal).
+`favorites_active` is `false` when `mopidy-tidal` isn't loaded *or* isn't
+logged in. When clients hit the favorites endpoints in that state they get:
+
+- `503` — `mopidy-tidal` backend not loaded at all (server-side config).
+- `403` — backend loaded but no authenticated Tidal session; the operator
+  needs to play any Tidal track in mopidy (e.g. via Iris or `mopidy-mpd`) to
+  trigger mopidy-tidal's OAuth flow, then retry.
+
+`stats` and `audio` work for any backend (independent of Tidal).
 
 ### Favorites
 
@@ -76,7 +82,10 @@ id — for an album whose Mopidy URI is `tidal:album:12345`, send `"12345"`.
 Responses:
 - `GET` → `200` with JSON array of `{id, name, artist?}` summaries.
 - `POST`/`DELETE` → `204` on success.
-- `503` if `mopidy-tidal` isn't loaded or isn't logged in.
+- `503` if `mopidy-tidal` isn't loaded.
+- `403` if `mopidy-tidal` is loaded but the Tidal session isn't authenticated.
+  The body carries an `error` field describing how to recover (play a Tidal
+  track in mopidy to trigger its login flow).
 
 ### Stats
 
@@ -185,7 +194,7 @@ for distinguishing DSD (`DSD_U32_BE`) from PCM (`S32_LE`).
 - **v0.2** — listening history (recent / most-played / totals).
 - **v0.3** — aggregated stats (top artists/albums/genres, day-of-week, hour-of-day).
 - **v0.4** — audio output device info.
-- **v0.5** — live ALSA params + bit-perfect chain analysis. *(current)*
+- **v0.5** — live ALSA params + bit-perfect chain analysis. *(current — 0.5.1 splits 503/403 for not-loaded vs not-logged-in)*
 - **v0.6** — mutable Tidal playlists (create / add / remove / reorder).
 - **v0.7** — discovery: Your Mixes, mood radios.
 - **v0.8** — admin: force session refresh, cache stats.

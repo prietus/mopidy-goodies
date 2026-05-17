@@ -19,14 +19,25 @@ _SESSION_ATTRS = ("_active_session", "_session", "session")
 
 
 class TidalUnavailable(RuntimeError):
-    """Raised when mopidy-tidal isn't loaded, isn't logged in, or the session
-    attribute can't be located."""
+    """Base — mopidy-tidal isn't usable. Distinct subclasses below let the
+    HTTP layer pick an accurate status code."""
+
+
+class TidalBackendMissing(TidalUnavailable):
+    """mopidy-tidal isn't installed/enabled. Server-side fix required;
+    nothing the client can do."""
+
+
+class TidalNotLoggedIn(TidalUnavailable):
+    """mopidy-tidal is loaded but has no authenticated session. Resolves
+    itself once the user plays a track in mopidy-tidal (which triggers
+    its OAuth flow)."""
 
 
 def get_session(core):
     backend = _find_tidal_backend(core)
     if backend is None:
-        raise TidalUnavailable("mopidy-tidal backend not loaded")
+        raise TidalBackendMissing("mopidy-tidal backend not loaded")
     proxy = backend.proxy() if hasattr(backend, "proxy") else backend
     for attr in _SESSION_ATTRS:
         try:
@@ -35,9 +46,10 @@ def get_session(core):
             continue
         if session is not None and getattr(session, "user", None) is not None:
             return session
-    raise TidalUnavailable(
-        f"mopidy-tidal backend found but no session attribute matched "
-        f"({_SESSION_ATTRS}); is the user logged in?"
+    raise TidalNotLoggedIn(
+        "mopidy-tidal is loaded but has no authenticated session — "
+        "play a track from Tidal in mopidy (any client) to trigger its "
+        "login flow, then retry."
     )
 
 
