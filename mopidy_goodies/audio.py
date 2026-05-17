@@ -10,6 +10,13 @@ would accept as a sink. Common shapes:
     autoaudiosink
     pipewiresink target-object=Topping
 
+A pipeline can also fan out via ``tee`` — e.g. one branch to ``alsasink`` for
+the DAC and another to ``filesink`` for the visualizer FIFO described in
+``visualizer.py``. We walk every element in the bin spec, prefer the
+``alsasink`` branch, and analyse only that branch when reasoning about
+bit-perfectness, so a resampler on the visualizer branch doesn't falsely
+mark the DAC chain as degraded.
+
 For ``alsasink`` we extract the card and look it up in
 ``/proc/asound/cards``. For other sinks (or non-Linux hosts) we return what
 we can parse and leave ``card`` as ``None`` so the client can fall back to
@@ -35,7 +42,7 @@ def describe(audio_config, cards_path=DEFAULT_CARDS_PATH):
     output = (audio_config or {}).get("output")
     if not output:
         return None
-    sink, params = _parse_bin(output)
+    sink, params, _branch = _find_sink(output)
     if not sink:
         return None
     device = params.get("device")
@@ -92,17 +99,25 @@ def analyze_chain(audio_config):
     cfg = audio_config or {}
     output = (cfg.get("output") or "").strip()
     mixer = (cfg.get("mixer") or "").strip().lower()
-    sink, params = _parse_bin(output)
-    output_l = output.lower()
+    sink, params, sink_branch = _find_sink(output)
+
+    # Restrict the resample/convert/plug/dmix scan to the branch feeding the
+    # primary sink. Otherwise an explicit ``audioresample`` on a tee branch
+    # going to ``filesink`` (visualizer FIFO) would falsely mark the DAC
+    # chain as not-bit-perfect.
+    if sink_branch is not None:
+        branch_text = _branch_text(output, sink_branch)
+    else:
+        branch_text = output.lower()
 
     direct_hw = bool(
-        sink in ("alsasink",)
+        sink == "alsasink"
         and params.get("device", "").startswith(("hw:",))
     )
-    no_resample = "audioresample" not in output_l
-    no_convert = "audioconvert" not in output_l
-    no_plug = "plughw:" not in output_l
-    no_dmix = "dmix" not in output_l and "dsnoop" not in output_l
+    no_resample = "audioresample" not in branch_text
+    no_convert = "audioconvert" not in branch_text
+    no_plug = "plughw:" not in branch_text
+    no_dmix = "dmix" not in branch_text and "dsnoop" not in branch_text
     no_mixer = mixer in ("", "none")
 
     chain = {
@@ -202,6 +217,104 @@ def _parse_bin(spec):
         k, v = tok.split("=", 1)
         params[k.strip()] = v.strip()
     return sink, params
+
+
+# A tee back-reference is a pad-name token ending in ``.`` — e.g. ``t.`` for
+# ``tee name=t``. It marks the start (or end, depending on position) of a
+# parallel branch rather than being an element of its own.
+_BRANCH_REF = re.compile(r"^\w+\.$")
+
+
+def _iter_pipeline(spec):
+    """Yield ``(element_name, params, branch_idx)`` for every element.
+
+    Elements are separated by ``!``. Tee back-references at chunk boundaries
+    (``t.``, ``vis.``, …) advance ``branch_idx``: ``0`` is the trunk leading
+    up to (and including) the ``tee`` element; ``1, 2, …`` are the parallel
+    branches in source order. Each occurrence of a back-ref is treated as
+    starting a new branch, so two ``t.`` separators produce two distinct
+    branches with the same tee name.
+    """
+    if not spec:
+        return
+    branch_idx = 0
+    for chunk in spec.split("!"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            tokens = shlex.split(chunk, posix=True)
+        except ValueError:
+            continue
+        # Leading back-ref: this chunk's element belongs to the next branch.
+        while tokens and _BRANCH_REF.match(tokens[0]):
+            tokens.pop(0)
+            branch_idx += 1
+        # Trailing back-ref: the FOLLOWING chunk's element starts a new
+        # branch. We don't bump the counter until after yielding the current
+        # element so the boundary lands between the two.
+        trailing = False
+        while tokens and _BRANCH_REF.match(tokens[-1]):
+            tokens.pop()
+            trailing = True
+        if tokens:
+            name = tokens[0]
+            params = {}
+            for tok in tokens[1:]:
+                if "=" not in tok:
+                    continue
+                k, v = tok.split("=", 1)
+                params[k.strip()] = v.strip()
+            yield name, params, branch_idx
+        if trailing:
+            branch_idx += 1
+
+
+# Sinks we *don't* want to mistake for the audio output: ``filesink`` is the
+# visualizer FIFO branch, ``fakesink`` is a debugging null sink.
+_AUX_SINKS = frozenset({"filesink", "fakesink"})
+
+
+def _find_sink(spec, prefer="alsasink"):
+    """Locate the relevant output sink in a (possibly branched) pipeline.
+
+    Returns ``(name, params, branch_idx)`` for the first matching element,
+    or ``(None, {}, None)`` if none was found. Preference order:
+
+    1. The exact ``prefer`` element name (default ``alsasink``) — keeps the
+       DAC branch winning when a tee feeds both ``alsasink`` and ``filesink``.
+    2. Any element ending in ``sink`` other than ``filesink``/``fakesink``.
+    3. Any element ending in ``sink`` (last-resort fallback).
+    """
+    elements = list(_iter_pipeline(spec))
+    if prefer:
+        for name, params, branch in elements:
+            if name == prefer:
+                return name, params, branch
+    for name, params, branch in elements:
+        if name and name.endswith("sink") and name not in _AUX_SINKS:
+            return name, params, branch
+    for name, params, branch in elements:
+        if name and name.endswith("sink"):
+            return name, params, branch
+    return None, {}, None
+
+
+def _branch_text(spec, branch_idx):
+    """Return a lowercased text blob of every element in ``branch_idx``.
+
+    Used by :func:`analyze_chain` to scan for ``audioresample``/
+    ``audioconvert``/``plughw:``/``dmix`` markers without bleeding from
+    sibling branches (e.g. the visualizer FIFO branch on a ``tee``).
+    """
+    parts = []
+    for name, params, branch in _iter_pipeline(spec):
+        if branch != branch_idx:
+            continue
+        parts.append(name)
+        for k, v in params.items():
+            parts.append(f"{k}={v}")
+    return " ".join(parts).lower()
 
 
 # /proc/asound/cards first-line format:

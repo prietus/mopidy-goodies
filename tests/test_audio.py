@@ -48,6 +48,75 @@ def test_parse_bin(spec, expected_sink, expected_params):
     assert params == expected_params
 
 
+# ── _iter_pipeline / _find_sink (tee topology) ─────────────────────────────
+
+
+# Real-world Mopidy config: tee fans the audio out to ALSA (DAC) and to a
+# FIFO that goodies' visualizer drains over WebSocket.
+TEE_SPEC = (
+    "tee name=t  "
+    "t. ! queue ! alsasink device=hw:CARD=D90III,DEV=0 buffer-time=200000  "
+    "t. ! queue leaky=downstream max-size-buffers=200 "
+    "! audioconvert ! audioresample "
+    "! audio/x-raw,format=S16LE,rate=48000,channels=2 "
+    "! filesink location=/tmp/mopidy.fifo sync=false"
+)
+
+
+def test_iter_pipeline_simple():
+    elems = list(audio._iter_pipeline("alsasink device=hw:1,0"))
+    assert elems == [("alsasink", {"device": "hw:1,0"}, 0)]
+
+
+def test_iter_pipeline_linear_chain():
+    elems = list(audio._iter_pipeline(
+        "audioresample ! audioconvert ! alsasink device=hw:1,0"
+    ))
+    assert [(n, b) for n, _, b in elems] == [
+        ("audioresample", 0),
+        ("audioconvert", 0),
+        ("alsasink", 0),
+    ]
+
+
+def test_iter_pipeline_tee_assigns_distinct_branches():
+    elems = list(audio._iter_pipeline(TEE_SPEC))
+    names_and_branches = [(n, b) for n, _, b in elems]
+    # Trunk: tee. Branch 1: queue → alsasink. Branch 2: queue → audioconvert
+    # → audioresample → capsfilter → filesink.
+    assert ("tee", 0) in names_and_branches
+    assert ("alsasink", 1) in names_and_branches
+    assert ("filesink", 2) in names_and_branches
+    # Crucially, the alsasink branch contains no resampler/converter.
+    branch1 = [n for n, b in names_and_branches if b == 1]
+    assert "audioresample" not in branch1
+    assert "audioconvert" not in branch1
+
+
+def test_find_sink_prefers_alsasink_in_tee():
+    sink, params, branch = audio._find_sink(TEE_SPEC)
+    assert sink == "alsasink"
+    assert params["device"] == "hw:CARD=D90III,DEV=0"
+    assert branch == 1
+
+
+def test_find_sink_falls_back_to_filesink_when_no_dac():
+    spec = "tee name=t  t. ! filesink location=/tmp/a  t. ! filesink location=/tmp/b"
+    sink, _, _ = audio._find_sink(spec)
+    # No alsasink and no other sink besides filesink: last-resort fallback.
+    assert sink == "filesink"
+
+
+def test_find_sink_picks_non_filesink_sink_first():
+    spec = "tee name=t  t. ! pulsesink  t. ! filesink location=/tmp/x"
+    sink, _, _ = audio._find_sink(spec)
+    assert sink == "pulsesink"
+
+
+def test_find_sink_empty():
+    assert audio._find_sink("") == (None, {}, None)
+
+
 # ── _alsa_target ───────────────────────────────────────────────────────────
 
 
@@ -169,6 +238,16 @@ def test_describe_no_config_returns_none(cards):
 def test_describe_unknown_card_keeps_device(cards):
     info = audio.describe({"output": "alsasink device=hw:42,0"}, cards_path=cards)
     assert info == {"sink": "alsasink", "device": "hw:42,0", "card": None}
+
+
+def test_describe_resolves_alsasink_inside_tee(cards):
+    # Mopidy config with a visualizer FIFO tee branch — describe() must still
+    # resolve the DAC card, not get stuck at the leading ``tee`` element.
+    info = audio.describe({"output": TEE_SPEC}, cards_path=cards)
+    assert info is not None
+    assert info["sink"] == "alsasink"
+    assert info["device"] == "hw:CARD=D90III,DEV=0"
+    assert info["card"]["name"] == "Topping D90 III SABRE"
 
 
 # ── _alsa_dev_index ────────────────────────────────────────────────────────
@@ -325,6 +404,30 @@ def test_chain_none_config_is_unknown():
     assert chain["verdict"] == "unknown"
 
 
+def test_chain_tee_visualizer_branch_does_not_taint_dac():
+    # The visualizer FIFO branch carries audioconvert + audioresample, but the
+    # DAC branch is a clean ``queue ! alsasink hw:...``. The verdict must
+    # reflect the DAC branch alone.
+    chain = audio.analyze_chain({"output": TEE_SPEC, "mixer": "none"})
+    assert chain["no_resample"] is True
+    assert chain["no_convert"] is True
+    assert chain["direct_hw"] is True
+    assert chain["verdict"] == "bit-perfect"
+
+
+def test_chain_tee_with_resampler_in_dac_branch_is_not_bit_perfect():
+    # If the DAC branch itself has a resampler, the verdict must catch it
+    # even though the spec also has a tee.
+    spec = (
+        "tee name=t  "
+        "t. ! queue ! audioresample ! alsasink device=hw:CARD=D90III,DEV=0  "
+        "t. ! queue ! filesink location=/tmp/mopidy.fifo"
+    )
+    chain = audio.analyze_chain({"output": spec, "mixer": "none"})
+    assert chain["no_resample"] is False
+    assert chain["verdict"] == "not-bit-perfect"
+
+
 # ── runtime (end-to-end) ───────────────────────────────────────────────────
 
 
@@ -376,3 +479,22 @@ def test_runtime_picks_correct_dev(cards, tmp_path):
     )
     assert info["active"] is True
     assert info["format"]["rate"] == 44100
+
+
+def test_runtime_tee_visualizer_branch_end_to_end(cards, tmp_path):
+    # Regression: when ``[audio] output`` is a tee fanning to alsasink + a
+    # visualizer FIFO, the whole chain (card resolution + hw_params probe +
+    # verdict) must keep working — not just collapse to ``sink="tee"``.
+    _write_hw_params(tmp_path, 1, 0, 0, HW_PARAMS_PLAYING)
+    tee = (
+        "tee name=t  "
+        "t. ! queue ! alsasink device=hw:CARD=D90III,DEV=0  "
+        "t. ! queue ! audioconvert ! audioresample "
+        "! audio/x-raw,format=S16LE,rate=48000,channels=2 "
+        "! filesink location=/tmp/mopidy.fifo"
+    )
+    info = audio.runtime({"output": tee, "mixer": "none"}, cards_path=cards, proc_root=tmp_path)
+    assert info["output"]["card"]["name"] == "Topping D90 III SABRE"
+    assert info["active"] is True
+    assert info["format"]["rate"] == 44100
+    assert info["chain"]["verdict"] == "bit-perfect"
