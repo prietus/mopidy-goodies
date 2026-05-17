@@ -1,35 +1,35 @@
-"""HTTP endpoints exposed by mopidy-tidal-goodies.
+"""HTTP endpoints exposed by mopidy-goodies.
 
-Routes mounted under ``/tidal_goodies/`` (Mopidy http convention takes the
-ext_name as prefix). Two feature groups:
+Routes mounted under ``/goodies/`` (Mopidy http convention takes the
+ext_name as prefix). Three feature groups:
 
   Tidal favorites — requires mopidy-tidal logged in. 503 if the backend
   isn't loaded at all; 403 if it's loaded but the session is unauthenticated
   (the operator needs to play a Tidal track in mopidy to trigger login).
 
-      POST   /tidal_goodies/favorites/albums          { "id": "12345" }
-      DELETE /tidal_goodies/favorites/albums/12345
-      GET    /tidal_goodies/favorites/albums
+      POST   /goodies/favorites/albums          { "id": "12345" }
+      DELETE /goodies/favorites/albums/12345
+      GET    /goodies/favorites/albums
 
   Stats — works for any backend (independent of mopidy-tidal).
 
-      GET    /tidal_goodies/stats/recent?limit=50
-      GET    /tidal_goodies/stats/most-played?limit=50&since=<unix>
-      GET    /tidal_goodies/stats/top-artists?limit=10&since=<unix>
-      GET    /tidal_goodies/stats/top-albums?limit=10&since=<unix>
-      GET    /tidal_goodies/stats/by-genre?limit=10&since=<unix>
-      GET    /tidal_goodies/stats/by-day-of-week
-      GET    /tidal_goodies/stats/by-hour
-      GET    /tidal_goodies/stats/totals
+      GET    /goodies/stats/recent?limit=50
+      GET    /goodies/stats/most-played?limit=50&since=<unix>
+      GET    /goodies/stats/top-artists?limit=10&since=<unix>
+      GET    /goodies/stats/top-albums?limit=10&since=<unix>
+      GET    /goodies/stats/by-genre?limit=10&since=<unix>
+      GET    /goodies/stats/by-day-of-week
+      GET    /goodies/stats/by-hour
+      GET    /goodies/stats/totals
 
   Audio:
 
-      GET    /tidal_goodies/audio/output
-      GET    /tidal_goodies/audio/active
+      GET    /goodies/audio/output
+      GET    /goodies/audio/active
 
   Discovery:
 
-      GET    /tidal_goodies/_health
+      GET    /goodies/_health
 """
 import json
 import logging

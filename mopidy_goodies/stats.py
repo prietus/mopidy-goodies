@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 def db_path_from_config(config) -> pathlib.Path:
     """Resolve the SQLite path under Mopidy's data_dir/<ext_name>/."""
-    base = pathlib.Path(config["core"]["data_dir"]) / "tidal_goodies"
+    base = pathlib.Path(config["core"]["data_dir"]) / "goodies"
     base.mkdir(parents=True, exist_ok=True)
     return base / "history.db"
 
@@ -88,9 +88,9 @@ class PlaybackHistoryFrontend(pykka.ThreadingActor, CoreListener):
     def on_start(self):
         try:
             self.conn = open_db(self.path)
-            logger.info("tidal-goodies stats: history at %s", self.path)
+            logger.info("mopidy-goodies stats: history at %s", self.path)
         except Exception as e:
-            logger.exception("tidal-goodies stats: failed to open DB: %s", e)
+            logger.exception("mopidy-goodies stats: failed to open DB: %s", e)
             self.conn = None
 
     def on_stop(self):
@@ -133,4 +133,4 @@ class PlaybackHistoryFrontend(pykka.ThreadingActor, CoreListener):
                 ),
             )
         except Exception as e:
-            logger.warning("tidal-goodies stats: insert failed: %s", e)
+            logger.warning("mopidy-goodies stats: insert failed: %s", e)

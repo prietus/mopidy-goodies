@@ -1,10 +1,10 @@
-"""Unit tests for :mod:`mopidy_tidal_goodies.audio` — pure-function logic,
+"""Unit tests for :mod:`mopidy_goodies.audio` — pure-function logic,
 no Mopidy required."""
 from pathlib import Path
 
 import pytest
 
-from mopidy_tidal_goodies import audio
+from mopidy_goodies import audio
 
 
 # Realistic /proc/asound/cards content from a Mopidy box with onboard HDA +

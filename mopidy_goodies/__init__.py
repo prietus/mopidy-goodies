@@ -3,14 +3,14 @@ import pathlib
 
 from mopidy import config, ext
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 logger = logging.getLogger(__name__)
 
 
 class Extension(ext.Extension):
-    dist_name = "Mopidy-Tidal-Goodies"
-    ext_name = "tidal_goodies"
+    dist_name = "Mopidy-Goodies"
+    ext_name = "goodies"
     version = __version__
 
     def get_default_config(self):

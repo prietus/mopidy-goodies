@@ -1,12 +1,12 @@
 # Maintainer: Carlos Prieto <cprieto.ortiz@gmail.com>
-pkgname=mopidy-tidal-goodies-git
-_pkgname=mopidy-tidal-goodies
-_pyname=mopidy_tidal_goodies
+pkgname=mopidy-goodies-git
+_pkgname=mopidy-goodies
+_pyname=mopidy_goodies
 pkgver=r2.1d5bb7c
 pkgrel=1
-pkgdesc="HTTP companion for mopidy-tidal: favorites, listening history, mixes"
+pkgdesc="HTTP companion endpoints for Mopidy: Tidal favorites, listening stats, audio chain info"
 arch=('any')
-url="https://github.com/prietus/mopidy-tidal-goodies"
+url="https://github.com/prietus/mopidy-goodies"
 license=('Apache-2.0')
 depends=(
   'mopidy'
@@ -21,10 +21,11 @@ makedepends=(
   'python-setuptools'
 )
 optdepends=(
-  'mopidy-tidal: required for /favorites endpoints (stats works without it)'
+  'mopidy-tidal: required for /favorites endpoints (stats and audio work without it)'
 )
-provides=("${_pkgname}")
-conflicts=("${_pkgname}")
+provides=("${_pkgname}" 'mopidy-tidal-goodies')
+conflicts=("${_pkgname}" 'mopidy-tidal-goodies' 'mopidy-tidal-goodies-git')
+replaces=('mopidy-tidal-goodies-git' 'mopidy-tidal-goodies')
 source=("${_pkgname}::git+${url}.git")
 sha256sums=('SKIP')
 
