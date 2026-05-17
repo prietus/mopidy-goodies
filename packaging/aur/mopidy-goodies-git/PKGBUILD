@@ -2,7 +2,7 @@
 pkgname=mopidy-goodies-git
 _pkgname=mopidy-goodies
 _pyname=mopidy_goodies
-pkgver=r2.1d5bb7c
+pkgver=r9.a35a8d2
 pkgrel=1
 pkgdesc="HTTP companion endpoints for Mopidy: Tidal favorites, listening stats, audio chain info"
 arch=('any')
