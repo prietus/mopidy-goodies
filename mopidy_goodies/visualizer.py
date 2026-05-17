@@ -4,31 +4,32 @@ Setup (operator side):
 
   1. In ``mopidy.conf`` ``[audio] output``, branch the pipeline with ``tee``
      so one rama drives ``alsasink`` (bit-perfect) and the other writes
-     PCM to a FIFO::
+     PCM to a FIFO. Single line — INI's continuation rules are too brittle
+     for a GStreamer bin spec::
 
-       output = tee name=t
-         t. ! queue ! alsasink device=hw:CARD=SABRE,DEV=0 buffer-time=200000
-         t. ! queue leaky=downstream max-size-buffers=200
-            ! audioconvert ! audioresample
-            ! audio/x-raw,format=S16LE,rate=44100,channels=2
-            ! filesink location=/tmp/mopidy.fifo sync=false
+       output = tee name=t  t. ! queue ! alsasink device=hw:CARD=SABRE,DEV=0 buffer-time=200000  t. ! queue leaky=downstream max-size-buffers=200 ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! filesink location=/tmp/mopidy.fifo sync=false
 
   2. ``mkfifo /tmp/mopidy.fifo`` (once).
   3. ``[goodies] visualizer_fifo = /tmp/mopidy.fifo``.
 
 Clients connecting to ``ws://host:6680/goodies/audio/visualizer`` get raw
 binary frames as they arrive — interpret as ``S16LE`` at the rate/channels
-the operator configured on the FIFO branch (convention: 44.1 kHz stereo
+the operator configured on the FIFO branch (convention: 48 kHz stereo
 unless the operator changed it).
 
 Design notes:
 
+* GStreamer's ``filesink`` errors out if it tries to write to the FIFO
+  with no reader on the other end — and that error propagates through
+  the bin and kills the ``alsasink`` rama too. So the reader has to be
+  open *before* playback starts, not just when a WS client connects.
+  ``ensure_reader()`` starts a single process-wide ``FifoReader`` at
+  http-app factory time (once per Mopidy startup) and keeps it running
+  for the whole process lifetime. If no WS clients are connected the
+  thread still reads and discards — ~200 KB/s of memcpy is cheap.
 * The FIFO is single-reader by kernel contract. One ``FifoReader`` thread
   per goodies process opens it; that thread fans chunks out to every
   connected WebSocket.
-* The reader is lazy: it spins up on first WS connect, shuts down when
-  the last client disconnects, so an idle server isn't pinned on a
-  blocking read.
 * Reads are blocking in a thread; broadcasts hop back to the Tornado
   IOLoop via ``add_callback``. Never touch a ``WebSocketHandler`` from
   the reader thread directly.
@@ -86,15 +87,10 @@ class FifoReader(threading.Thread):
 
 
 class VisualizerWebSocket(WebSocketHandler):
-    """Broadcasts PCM chunks to all connected clients.
-
-    Class-level state (``_clients`` / ``_reader``) is fine because there is
-    a single Tornado IOLoop in the Mopidy http extension and all access
-    happens on that loop's thread.
-    """
+    """Registers/unregisters as a broadcast target. The actual FIFO read
+    lives in the process-wide reader started by :func:`ensure_reader`."""
 
     _clients: set["VisualizerWebSocket"] = set()
-    _reader: FifoReader | None = None
 
     def initialize(self, core, config):
         self.core = core
@@ -107,37 +103,21 @@ class VisualizerWebSocket(WebSocketHandler):
         return True
 
     def open(self):
-        fifo = self._fifo_path()
-        if not fifo:
+        if not _fifo_path(self.config):
             self.close(code=1011, reason="visualizer not configured")
             return
         VisualizerWebSocket._clients.add(self)
         logger.debug("visualizer WS open (%d total)", len(self._clients))
-        if VisualizerWebSocket._reader is None:
-            VisualizerWebSocket._reader = FifoReader(
-                fifo, IOLoop.current(), VisualizerWebSocket._broadcast
-            )
-            VisualizerWebSocket._reader.start()
 
     def on_close(self):
         VisualizerWebSocket._clients.discard(self)
         logger.debug("visualizer WS close (%d remaining)", len(self._clients))
-        if not VisualizerWebSocket._clients and VisualizerWebSocket._reader:
-            VisualizerWebSocket._reader.stop()
-            VisualizerWebSocket._reader = None
 
     def on_message(self, message):
         # Visualizer feed is server→client only. Ignore anything the client
         # sends rather than erroring — keeps the protocol forgiving for
         # heartbeats clients might send.
         pass
-
-    def _fifo_path(self) -> str | None:
-        section = (self.config or {}).get("goodies") or {}
-        path = section.get("visualizer_fifo")
-        if path and os.path.exists(path):
-            return path
-        return None
 
     @classmethod
     def _broadcast(cls, chunk: bytes):
@@ -155,8 +135,40 @@ class VisualizerWebSocket(WebSocketHandler):
             cls._clients.discard(client)
 
 
-def visualizer_active(config) -> bool:
-    """True iff the FIFO path is configured and the file actually exists."""
+# Process-wide reader: started at http factory time so the FIFO has a
+# reader from before GStreamer ever tries to write to it. See module
+# docstring for why "lazy on first WS connect" doesn't work.
+_global_reader: FifoReader | None = None
+_global_reader_lock = threading.Lock()
+
+
+def ensure_reader(config, loop: IOLoop) -> None:
+    """Idempotently start the FIFO reader if ``visualizer_fifo`` is set.
+
+    Called from the http app factory once per process. Safe to call
+    multiple times — second and later calls are no-ops.
+    """
+    global _global_reader
+    fifo = _fifo_path(config)
+    if not fifo:
+        return
+    with _global_reader_lock:
+        if _global_reader is not None and _global_reader.is_alive():
+            return
+        _global_reader = FifoReader(fifo, loop, VisualizerWebSocket._broadcast)
+        _global_reader.start()
+        logger.info("visualizer: process-wide FIFO reader started for %s", fifo)
+
+
+def _fifo_path(config) -> str | None:
+    """Return the configured FIFO path if it exists on disk, else None."""
     section = (config or {}).get("goodies") or {}
     path = section.get("visualizer_fifo")
-    return bool(path) and os.path.exists(path)
+    if path and os.path.exists(path):
+        return path
+    return None
+
+
+def visualizer_active(config) -> bool:
+    """True iff the FIFO path is configured and the file actually exists."""
+    return _fifo_path(config) is not None

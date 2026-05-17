@@ -40,7 +40,7 @@ from tornado.web import HTTPError, RequestHandler
 from . import __version__, audio
 from .stats import db_path_from_config
 from .tidal import TidalBackendMissing, TidalNotLoggedIn, TidalUnavailable, get_session
-from .visualizer import VisualizerWebSocket, visualizer_active
+from .visualizer import VisualizerWebSocket, ensure_reader, visualizer_active
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,12 @@ KINDS = ("album", "track", "artist", "playlist")
 
 
 def factory(config, core):
+    # Start the visualizer FIFO reader *before* GStreamer might try to
+    # write to it. filesink errors out (and tears down the whole audio
+    # bin) if there's no reader on the FIFO when it opens for writing;
+    # opening it lazily on first WS connect was too late.
+    from tornado.ioloop import IOLoop
+    ensure_reader(config, IOLoop.current())
     common = {"core": core, "config": config}
     return [
         (r"/_health", HealthHandler, common),
