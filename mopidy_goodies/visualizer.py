@@ -36,6 +36,7 @@ Design notes:
 """
 import logging
 import os
+import select
 import threading
 import time
 
@@ -65,25 +66,65 @@ class FifoReader(threading.Thread):
 
     def run(self):
         while not self._stop.is_set():
+            fd = self._open_nonblocking()
+            if fd is None:
+                # Path missing or other open error — wait briefly and retry.
+                if self._stop.wait(1.0):
+                    break
+                continue
             try:
-                # Blocking open: returns once a writer (GStreamer filesink)
-                # has the other end. If mopidy isn't playing, this just waits.
-                with open(self.path, "rb") as f:
-                    logger.info("visualizer FIFO opened: %s", self.path)
-                    while not self._stop.is_set():
-                        chunk = f.read(CHUNK_BYTES)
-                        if not chunk:
-                            # Writer closed (e.g. mopidy paused → GStreamer
-                            # may tear down the branch). Loop will reopen.
-                            break
-                        self.loop.add_callback(self.on_chunk, chunk)
-            except FileNotFoundError:
-                logger.warning("visualizer FIFO missing: %s", self.path)
-                time.sleep(1)
-            except Exception:
-                logger.exception("visualizer FIFO read error")
-                time.sleep(1)
+                logger.info("visualizer FIFO opened: %s", self.path)
+                self._read_loop(fd)
+            finally:
+                os.close(fd)
         logger.info("visualizer FIFO reader stopped")
+
+    def _open_nonblocking(self) -> int | None:
+        """Open the FIFO read-only in non-blocking mode.
+
+        A blocking ``open()`` on a FIFO with no writer parks the calling
+        thread inside the kernel until a writer shows up, *and that
+        syscall ignores Python's interpreter shutdown* — daemon threads
+        stuck there keep the process alive, so systemd ends up
+        SIGKILL'ing mopidy on stop. ``O_NONBLOCK`` returns immediately
+        regardless of writer state; we then ``select`` for readability,
+        which is interruptible by ``_stop``.
+        """
+        try:
+            return os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
+        except FileNotFoundError:
+            logger.warning("visualizer FIFO missing: %s", self.path)
+            return None
+        except OSError:
+            logger.exception("visualizer FIFO open error")
+            return None
+
+    def _read_loop(self, fd: int) -> None:
+        """Pump bytes from ``fd`` to ``on_chunk`` until EOF, error, or
+        ``_stop``. EOF (read returns 0 after writer closes) makes us
+        return so the outer loop can re-open."""
+        # 0.5 s select timeout keeps the loop responsive to _stop without
+        # burning CPU when nothing's coming.
+        while not self._stop.is_set():
+            try:
+                ready, _, _ = select.select([fd], [], [], 0.5)
+            except (OSError, InterruptedError):
+                return
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, CHUNK_BYTES)
+            except BlockingIOError:
+                # select said ready but nothing actually there — rare race;
+                # just loop and check _stop again.
+                continue
+            except OSError:
+                logger.exception("visualizer FIFO read error")
+                return
+            if not chunk:
+                # EOF — writer closed. Outer loop will reopen the FIFO.
+                return
+            self.loop.add_callback(self.on_chunk, chunk)
 
 
 class VisualizerWebSocket(WebSocketHandler):
