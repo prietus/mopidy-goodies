@@ -61,7 +61,8 @@ features to show in your client.
     "favorites_active": true,
     "stats": true,
     "audio": true,
-    "visualizer": false
+    "visualizer": false,
+    "library_scan": true
   }
 }
 ```
@@ -78,6 +79,7 @@ logged in. When clients hit the favorites endpoints in that state they get:
   trigger mopidy-tidal's OAuth flow, then retry.
 
 `stats` and `audio` work for any backend (independent of Tidal).
+`library_scan` is `true` when `mopidy-local` is enabled.
 
 ### Favorites
 
@@ -259,6 +261,43 @@ quietly, no error).
   static chain check is text-based and can't tell that those elements
   live on a side branch. Known limitation.
 
+### Library scan
+
+```
+POST   /goodies/library/scan        { "force": false }
+GET    /goodies/library/scan
+```
+
+Rescans `mopidy-local`'s media dir without shelling into the host. It runs
+`mopidy local scan` as a child process, forwarding the `--config`/`--option`
+arguments the running Mopidy was started with, so the scan uses the same
+`[local]` settings. `mopidy-local` reads its SQLite library on every request,
+so new albums show up to clients as soon as the scan finishes — no Mopidy
+restart needed.
+
+`POST` answers `202` with the status below, `409` if a scan is already
+running, or `503` if `mopidy-local` isn't enabled. `{"force": true}`
+rescans every file instead of only new/modified ones. Poll `GET` for
+progress:
+
+```json
+{
+  "running": false,
+  "force": false,
+  "started_at": 1759080000,
+  "finished_at": 1759080005,
+  "exit_code": 0,
+  "to_scan": 91,
+  "scanned": 91,
+  "removed": 0,
+  "error": null
+}
+```
+
+`to_scan` is how many files need (re)scanning; it's `null` until the scan
+has compared the media dir with the library. `error` holds the last lines
+of the scan's output when it exits non-zero.
+
 ## Roadmap
 
 - **v0.1** — favorites.
@@ -267,10 +306,11 @@ quietly, no error).
 - **v0.4** — audio output device info.
 - **v0.5** — live ALSA params + bit-perfect chain analysis. (0.5.1 splits 503/403 for not-loaded vs not-logged-in.)
 - **v0.6** — package renamed `mopidy-tidal-goodies` → `mopidy-goodies`; ext_name `tidal_goodies` → `goodies`.
-- **v0.7** — visualizer feed: WebSocket streaming raw PCM from a FIFO branch. *(current)*
-- **v0.8** — mutable Tidal playlists (create / add / remove / reorder).
-- **v0.9** — discovery: Your Mixes, mood radios.
-- **v0.10** — admin: force session refresh, cache stats.
+- **v0.7** — visualizer feed: WebSocket streaming raw PCM from a FIFO branch.
+- **v0.8** — trigger `mopidy local scan` over HTTP, with progress. *(current)*
+- **v0.9** — mutable Tidal playlists (create / add / remove / reorder).
+- **v0.10** — discovery: Your Mixes, mood radios.
+- **v0.11** — admin: force session refresh, cache stats.
 
 ## Migrating from `mopidy-tidal-goodies`
 
