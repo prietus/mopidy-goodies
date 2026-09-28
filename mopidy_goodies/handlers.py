@@ -14,6 +14,8 @@ ext_name as prefix). Three feature groups:
   Tidal credits — same requirements as favorites.
 
       GET    /goodies/tidal/albums/<id>/credits
+      GET    /goodies/tidal/albums/<id>/review
+      GET    /goodies/tidal/artists/<id>/bio
 
   Stats — works for any backend (independent of mopidy-tidal).
 
@@ -48,6 +50,7 @@ from tornado.web import HTTPError, RequestHandler
 
 from . import __version__, audio
 from .credits import AlbumNotFound, album_credits
+from .texts import TextNotFound, album_review, artist_bio
 from .library import SCANNER, local_enabled
 from .stats import db_path_from_config
 from .tidal import TidalBackendMissing, TidalNotLoggedIn, TidalUnavailable, get_session
@@ -81,6 +84,8 @@ def factory(config, core):
             common,
         ),
         (r"/tidal/albums/(\d+)/credits", TidalAlbumCreditsHandler, common),
+        (r"/tidal/albums/(\d+)/review", TidalAlbumReviewHandler, common),
+        (r"/tidal/artists/(\d+)/bio", TidalArtistBioHandler, common),
         (r"/stats/recent", StatsRecentHandler, common),
         (r"/stats/most-played", StatsMostPlayedHandler, common),
         (r"/stats/top-artists", StatsTopArtistsHandler, common),
@@ -142,6 +147,7 @@ class HealthHandler(_Base):
                 "favorites": True,
                 "favorites_active": tidal_active,
                 "credits": True,
+                "texts": True,
                 "stats": True,
                 "audio": True,
                 "visualizer": visualizer_active(self.config),
@@ -177,23 +183,42 @@ class FavoritesItemHandler(_Base):
         self.set_status(204)
 
 
-class TidalAlbumCreditsHandler(_Base):
-    """Per-track credits of a Tidal album: producers, composers, musicians
-    and their instruments. Cached in memory (credits don't change)."""
+class _TidalMetadataHandler(_Base):
+    """Runs a blocking Tidal metadata fetch off the IOLoop thread and maps
+    'not found' errors to 404."""
 
-    async def get(self, album_id):
+    async def _respond(self, fetch, item_id, not_found):
         from tornado.ioloop import IOLoop
 
         session = self._session()
         try:
-            # Blocking HTTP to Tidal (paged) — keep it off the IOLoop thread.
-            result = await IOLoop.current().run_in_executor(
-                None, album_credits, session, album_id
-            )
-        except AlbumNotFound:
-            raise HTTPError(404, reason=f"Tidal album {album_id} not found")
+            result = await IOLoop.current().run_in_executor(None, fetch, session, item_id)
+        except (AlbumNotFound, TextNotFound):
+            raise HTTPError(404, reason=not_found)
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps(result))
+
+
+class TidalAlbumCreditsHandler(_TidalMetadataHandler):
+    """Per-track credits of a Tidal album: producers, composers, musicians
+    and their instruments. Cached in memory (credits don't change)."""
+
+    async def get(self, album_id):
+        await self._respond(album_credits, album_id, f"Tidal album {album_id} not found")
+
+
+class TidalAlbumReviewHandler(_TidalMetadataHandler):
+    """Editorial review of a Tidal album (plain text + source for attribution)."""
+
+    async def get(self, album_id):
+        await self._respond(album_review, album_id, f"no review for Tidal album {album_id}")
+
+
+class TidalArtistBioHandler(_TidalMetadataHandler):
+    """Name, picture and biography of a Tidal artist."""
+
+    async def get(self, artist_id):
+        await self._respond(artist_bio, artist_id, f"Tidal artist {artist_id} not found")
 
 
 def _summarize(kind, x):

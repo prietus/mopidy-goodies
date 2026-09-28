@@ -4,8 +4,7 @@ tidalapi has no wrapper for credits, so we call the same endpoint the Tidal
 apps use through the session's raw request helper. Credits don't change, so
 responses are kept in a small in-memory LRU.
 """
-import collections
-import threading
+from .cache import LRU
 
 _PAGE = 100
 _CACHE_SIZE = 256
@@ -15,28 +14,7 @@ class AlbumNotFound(LookupError):
     pass
 
 
-class _LRU:
-    def __init__(self, size):
-        self._size = size
-        self._data = collections.OrderedDict()
-        self._lock = threading.Lock()
-
-    def get(self, key):
-        with self._lock:
-            if key in self._data:
-                self._data.move_to_end(key)
-                return self._data[key]
-            return None
-
-    def put(self, key, value):
-        with self._lock:
-            self._data[key] = value
-            self._data.move_to_end(key)
-            while len(self._data) > self._size:
-                self._data.popitem(last=False)
-
-
-_cache = _LRU(_CACHE_SIZE)
+_cache = LRU(_CACHE_SIZE)
 
 
 def album_credits(session, album_id):

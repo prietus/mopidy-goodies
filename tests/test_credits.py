@@ -1,6 +1,7 @@
 import pytest
 
 from mopidy_goodies import credits
+from mopidy_goodies.cache import LRU
 from mopidy_goodies.credits import AlbumNotFound, album_credits
 
 
@@ -37,7 +38,7 @@ def _entry(n, kind="track", credits_=None):
 
 @pytest.fixture(autouse=True)
 def _fresh_cache(monkeypatch):
-    monkeypatch.setattr(credits, "_cache", credits._LRU(8))
+    monkeypatch.setattr(credits, "_cache", LRU(8))
 
 
 def test_maps_tracks_and_credits():
