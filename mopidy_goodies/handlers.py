@@ -27,6 +27,11 @@ ext_name as prefix). Three feature groups:
       GET    /goodies/audio/output
       GET    /goodies/audio/active
 
+  Library — requires mopidy-local. Runs ``mopidy local scan`` in the background.
+
+      POST   /goodies/library/scan              { "force": false }
+      GET    /goodies/library/scan
+
   Discovery:
 
       GET    /goodies/_health
@@ -38,6 +43,7 @@ import sqlite3
 from tornado.web import HTTPError, RequestHandler
 
 from . import __version__, audio
+from .library import SCANNER, local_enabled
 from .stats import db_path_from_config
 from .tidal import TidalBackendMissing, TidalNotLoggedIn, TidalUnavailable, get_session
 from .visualizer import VisualizerWebSocket, ensure_reader, visualizer_active
@@ -80,6 +86,7 @@ def factory(config, core):
         (r"/audio/output", AudioOutputHandler, common),
         (r"/audio/active", AudioActiveHandler, common),
         (r"/audio/visualizer", VisualizerWebSocket, common),
+        (r"/library/scan", LibraryScanHandler, common),
     ]
 
 
@@ -131,6 +138,7 @@ class HealthHandler(_Base):
                 "stats": True,
                 "audio": True,
                 "visualizer": visualizer_active(self.config),
+                "library_scan": local_enabled(self.config),
             },
         }))
 
@@ -461,6 +469,36 @@ class AudioActiveHandler(_Base):
         info = audio.runtime(cfg)
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps(info))
+
+
+# ── library ────────────────────────────────────────────────────────────
+
+
+class LibraryScanHandler(_Base):
+    """Rescan mopidy-local's media dir without shelling into the host.
+
+    POST starts ``mopidy local scan`` (``{"force": true}`` rescans every file)
+    and answers 202 with the status, or 409 if a scan is already running.
+    GET returns the status so clients can poll progress.
+    """
+
+    def get(self):
+        self._write_status()
+
+    def post(self):
+        if not local_enabled(self.config):
+            raise HTTPError(503, reason="mopidy-local is not enabled")
+        try:
+            body = json.loads(self.request.body or b"{}")
+        except json.JSONDecodeError as e:
+            raise HTTPError(400, reason=f"invalid JSON: {e}")
+        started = SCANNER.start(force=bool(body.get("force", False)))
+        self.set_status(202 if started else 409)
+        self._write_status()
+
+    def _write_status(self):
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(SCANNER.status()))
 
 
 def _safe_int(s, default, lo=None, hi=None):
