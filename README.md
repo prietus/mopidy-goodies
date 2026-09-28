@@ -349,7 +349,7 @@ music to Tidal so clients can show Tidal's review, artist bio and credits.
     "country": "JP", "media": "CD", "musicbrainz_album_id": "…"
   },
   "tidal": { "album_id": "35986307", "artist_id": "8992", "title": "If You Want Blood You've Got It (Live)",
-             "method": "isrc", "score": 1.0 },
+             "method": "isrc", "score": 1.0, "same_album": true },
   "credits_source": "tidal",
   "credits": { "album_id": "local:album:md5:…", "tracks": [ { "id": "local:track:…", "isrc": "…", "credits": [ … ] } ] }
 }
@@ -358,13 +358,18 @@ music to Tidal so clients can show Tidal's review, artist bio and credits.
 - **Tidal match**, strongest first: `BARCODE` → Tidal album by UPC (exact
   edition, but Tidal often lacks regional pressings); then the tracks' `ISRC`s
   → vote for the Tidal album sharing the most recordings (`score` = share of
-  looked-up ISRCs found on it); then `MUSICBRAINZ_ALBUMID` → barcode on
-  MusicBrainz → UPC. Matches are stored in `data_dir/goodies/local.db`; misses
+  looked-up ISRCs found on it; an album with the same title beats a compilation
+  sharing more tracks); then `MUSICBRAINZ_ALBUMID` → barcode on MusicBrainz →
+  UPC; finally a Tidal search accepting only a near-exact artist + title.
+  `same_album` is `false` when the best Tidal album only shares recordings (a
+  compilation, box set or soundtrack): show its review/bio only when `true`.
+  Matches are stored in `data_dir/goodies/local.db`; misses
   are retried after a week. `DELETE …/match` forgets one (e.g. after retagging).
 - **Credits** use the same shape as `/tidal/albums/<id>/credits`, keyed by local
   track URI. Tag credits (`PERFORMER` as "Name (instrument)", `COMPOSER`,
   `PRODUCER`, `ENGINEER`, `MIXER`…) win; tracks without them borrow the Tidal
-  credits of the same recording (by ISRC). `credits_source` is `tags`, `tidal`,
+  credits of the same recording (by ISRC) or, when `same_album`, of the track
+  with the same title. `credits_source` is `tags`, `tidal`,
   `mixed` or `null`.
 - Works without Tidal (`tidal` is then `null`). `503` if `mopidy-local`'s
   media dir or mutagen isn't available; `404` if the album has no local files.

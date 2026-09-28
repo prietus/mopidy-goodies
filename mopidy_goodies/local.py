@@ -13,6 +13,11 @@ Tidal matching, strongest first (the result is stored in SQLite):
    the most recordings. ISRCs identify recordings, not editions, so this
    finds the music even when the pressing isn't on Tidal.
 3. ``MUSICBRAINZ_ALBUMID`` → the release's barcode on MusicBrainz → (1).
+4. Search "artist album" on Tidal, accepting only a near-exact artist + title.
+
+``same_album`` says whether the Tidal album is the same record (title match),
+not just shares recordings with it (a compilation or box set): clients should
+only show the review / bio when it's true. Credits by ISRC are right either way.
 
 Misses are remembered too and retried after ``_RETRY_MISS`` seconds.
 """
@@ -26,6 +31,7 @@ import re
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.parse
 import urllib.request
 
@@ -36,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 _RETRY_MISS = 7 * 24 * 3600
 _MAX_ISRC_LOOKUPS = 8
+_SAME_TITLE = 0.8     # normalised-title similarity to call it the same album
 _MB_UA = f"mopidy-goodies/{__version__} ( https://github.com/prietus/mopidy-goodies )"
 
 # Picard / Vorbis credit keys → role label shown to clients.
@@ -106,6 +113,11 @@ def _from_id3(tags):
         return _first(frame.text) if frame else None
 
     credits = {}
+    performers = tags.get("TXXX:PERFORMER")  # some taggers mirror Vorbis PERFORMER here
+    for raw in (performers.text if performers else []):
+        m = _PERFORMER.match(str(raw))
+        if m:
+            _add(credits, m[2].strip().capitalize() or "Performer", m[1])
     for fid, role in (("TCOM", "Composer"), ("TEXT", "Lyricist"), ("TPE3", "Conductor")):
         frame = tags.get(fid)
         for name in (frame.text if frame else []):
@@ -118,7 +130,7 @@ def _from_id3(tags):
         "isrc": text("TSRC"),
         "barcode": txxx("BARCODE"),
         "catalog_number": txxx("CATALOGNUMBER"),
-        "label": text("TPUB"),
+        "label": text("TPUB") or txxx("LABEL"),
         "country": txxx("MusicBrainz Album Release Country"),
         "media": txxx("MEDIA") or text("TMED"),
         "musicbrainz_album_id": txxx("MusicBrainz Album Id"),
@@ -181,6 +193,7 @@ def album_info(core, config, session, album_uri, db_path):
         tidal = _cached_match(db_path, album_uri, lambda: match_tidal(
             session,
             album_name=tracks[0].album.name if tracks[0].album else "",
+            artist_name=_album_artist(tracks[0]),
             barcode=edition["barcode"],
             isrcs=[i for i in isrcs if i],
             mbid=edition["musicbrainz_album_id"],
@@ -197,23 +210,32 @@ def album_info(core, config, session, album_uri, db_path):
     }
 
 
+def _album_artist(track):
+    artists = (track.album.artists if track.album else None) or track.artists or []
+    return next(iter(artists)).name if artists else ""
+
+
 def _merge_credits(session, per_track, tidal):
-    """Tag credits win; tracks without them borrow Tidal's by ISRC."""
-    tidal_by_isrc = {}
+    """Tag credits win; tracks without them borrow Tidal's for the same recording
+    (by ISRC) or, when Tidal has the same album, for the same title."""
+    tidal_tracks = []
     if tidal and session is not None:
         try:
-            for t in album_credits(session, tidal["album_id"])["tracks"]:
-                if t.get("isrc"):
-                    tidal_by_isrc[t["isrc"].upper()] = t["credits"]
+            tidal_tracks = album_credits(session, tidal["album_id"])["tracks"]
         except Exception as e:
             logger.warning("goodies: Tidal credits for %s failed: %s", tidal["album_id"], e)
+    by_isrc = {t["isrc"].upper(): t["credits"] for t in tidal_tracks if t.get("isrc")}
+    by_title = {_norm_title(t.get("title")): t["credits"] for t in tidal_tracks} if tidal and tidal.get("same_album") else {}
 
     out, used = [], set()
     for t, tags in per_track:
         credits = tags.get("credits") or []
         if credits:
             used.add("tags")
-        elif tags.get("isrc") and (tc := tidal_by_isrc.get(tags["isrc"].upper())):
+        elif tags.get("isrc") and (tc := by_isrc.get(tags["isrc"].upper())):
+            credits = tc
+            used.add("tidal")
+        elif by_title and (tc := _best_title(t.name, by_title)):
             credits = tc
             used.add("tidal")
         out.append({
@@ -225,11 +247,19 @@ def _merge_credits(session, per_track, tidal):
     return out, source
 
 
+def _best_title(title, by_title):
+    key = _norm_title(title)
+    if key in by_title:
+        return by_title[key]
+    best = max(by_title, key=lambda k: _similar(key, k), default=None)
+    return by_title[best] if best is not None and _similar(key, best) >= 0.9 else None
+
+
 # ── Tidal matching ─────────────────────────────────────────────────────
 
 
-def match_tidal(session, *, album_name, barcode, isrcs, mbid, track_count):
-    """``{"album_id", "artist_id", "title", "method", "score"}`` or None."""
+def match_tidal(session, *, album_name, artist_name="", barcode, isrcs, mbid, track_count):
+    """``{"album_id", "artist_id", "title", "method", "score", "same_album"}`` or None."""
     if barcode and (m := _by_barcode(session, barcode, "barcode")):
         return m
     if isrcs and (m := _by_isrc(session, isrcs, album_name, track_count)):
@@ -237,6 +267,8 @@ def match_tidal(session, *, album_name, barcode, isrcs, mbid, track_count):
     if mbid and not barcode and (mb_barcode := _musicbrainz_barcode(mbid)):
         if m := _by_barcode(session, mb_barcode, "musicbrainz"):
             return m
+    if album_name and artist_name:
+        return _by_search(session, artist_name, album_name)
     return None
 
 
@@ -245,34 +277,66 @@ def _by_barcode(session, barcode, method):
         albums = session.get_albums_by_barcode(barcode)
     except Exception:  # ObjectNotFound when Tidal lacks that pressing
         return None
-    return _result(albums[0], method, 1.0) if albums else None
+    return _result(albums[0], method, 1.0, same_album=True) if albums else None
 
 
 def _by_isrc(session, isrcs, album_name, track_count):
-    queried, votes, albums = 0, {}, {}
-    for isrc in list(dict.fromkeys(i.upper() for i in isrcs))[:_MAX_ISRC_LOOKUPS]:
-        queried += 1
+    wanted = list(dict.fromkeys(i.upper() for i in isrcs))[:_MAX_ISRC_LOOKUPS]
+
+    def lookup(isrc):
         try:
-            found = session.get_tracks_by_isrc(isrc)
+            return session.get_tracks_by_isrc(isrc)
         except Exception:
-            continue
+            return []
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lookup, wanted))
+
+    votes, albums = {}, {}
+    for found in results:
         for album in {t.album.id: t.album for t in found if t.album is not None}.values():
             votes[album.id] = votes.get(album.id, 0) + 1
             albums[album.id] = album
     if not votes:
         return None
 
+    title = _norm_title(album_name)
+
     def rank(album_id):
         album = albums[album_id]
-        similarity = difflib.SequenceMatcher(None, _norm(album_name), _norm(album.name)).ratio()
+        similarity = _similar(title, _norm_title(album.name))
         size_gap = abs((getattr(album, "num_tracks", None) or track_count) - track_count)
-        return (votes[album_id], similarity, -size_gap)
+        # The same record beats a compilation that happens to share more tracks.
+        return (similarity >= _SAME_TITLE, votes[album_id], similarity, -size_gap)
 
     best = max(votes, key=rank)
-    return _result(albums[best], "isrc", round(votes[best] / queried, 2))
+    same = _similar(title, _norm_title(albums[best].name)) >= _SAME_TITLE
+    return _result(albums[best], "isrc", round(votes[best] / len(wanted), 2), same_album=same)
 
 
-def _result(album, method, score):
+def _by_search(session, artist_name, album_name):
+    import tidalapi
+
+    try:
+        found = session.search(f"{artist_name} {_norm_title(album_name)}", models=[tidalapi.Album], limit=10)
+    except Exception as e:
+        logger.debug("goodies: Tidal search failed: %s", e)
+        return None
+    title, artist = _norm_title(album_name), _norm(artist_name)
+    best, best_sim = None, 0.0
+    for album in found.get("albums", []):
+        album_artist = _norm(getattr(getattr(album, "artist", None), "name", ""))
+        if _similar(artist, album_artist) < 0.85:
+            continue
+        sim = _similar(title, _norm_title(album.name))
+        if sim > best_sim:
+            best, best_sim = album, sim
+    if best is None or best_sim < 0.9:
+        return None
+    return _result(best, "search", round(best_sim, 2), same_album=True)
+
+
+def _result(album, method, score, *, same_album):
     artist = getattr(album, "artist", None)
     return {
         "album_id": str(album.id),
@@ -280,11 +344,34 @@ def _result(album, method, score):
         "title": album.name,
         "method": method,
         "score": score,
+        "same_album": same_album,
     }
 
 
 def _norm(s):
     return re.sub(r"[\W_]+", " ", (s or "").lower()).strip()
+
+
+_EDITION_NOISE = re.compile(
+    r"[(\[{][^)\]}]*[)\]}]"                    # anything in brackets: (Deluxe), [Japan], {2016}
+    r"|\b(remaster(ed)?|deluxe|expanded|anniversary|edition|version|bonus tracks?)\b"
+)
+
+
+def _norm_title(s):
+    """Album/track title without year prefixes and edition noise, for comparison."""
+    s = _EDITION_NOISE.sub(" ", (s or "").lower())
+    # "1984 Purple Rain", "1969 - Led Zeppelin II" — but keep a title that *is* a year ("1984").
+    without_year = re.sub(r"^\s*(19|20)\d\d\s*[.\-–:]*\s*", "", s)
+    return _norm(without_year) or _norm(s)
+
+
+def _similar(a, b):
+    if not a or not b:
+        return 0.0
+    if a == b or (min(len(a), len(b)) >= 5 and (a in b or b in a)):
+        return 1.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
 
 
 _mb_lock = threading.Lock()
