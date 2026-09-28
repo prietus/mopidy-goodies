@@ -1,7 +1,5 @@
 # Mopidy-Goodies
 
-[![PyPI](https://img.shields.io/pypi/v/mopidy-goodies)](https://pypi.org/project/mopidy-goodies/)
-
 HTTP companion endpoints for [Mopidy](https://mopidy.com/) that fill in gaps
 the core and its extensions don't expose: Tidal favorites (via
 [mopidy-tidal](https://github.com/EbbLabs/mopidy-tidal)), backend-agnostic
