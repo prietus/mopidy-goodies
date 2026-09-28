@@ -12,6 +12,7 @@ depends=(
   'mopidy'
   'python-tornado'
   'python-pykka'
+  'python-mutagen'
 )
 makedepends=(
   'git'
