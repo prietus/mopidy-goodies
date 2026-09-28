@@ -23,6 +23,7 @@ dependencies = [
   "mopidy >= 4.0.0a2",
   "mopidy-tidal",
   "tornado >= 6.0",
+  "mutagen",
 ]
 
 [project.optional-dependencies]

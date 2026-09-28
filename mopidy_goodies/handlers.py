@@ -33,6 +33,12 @@ ext_name as prefix). Three feature groups:
       GET    /goodies/audio/output
       GET    /goodies/audio/active
 
+  Local album metadata — requires mopidy-local + mutagen. Tags read from the
+  files (edition, credits) and a match to the same music on Tidal.
+
+      GET    /goodies/local/album?uri=local:album:…
+      DELETE /goodies/local/album/match?uri=local:album:…   (re-match next time)
+
   Library — requires mopidy-local. Runs ``mopidy local scan`` in the background.
 
       POST   /goodies/library/scan              { "force": false }
@@ -51,6 +57,7 @@ from tornado.web import HTTPError, RequestHandler
 from . import __version__, audio
 from .credits import AlbumNotFound, album_credits
 from .texts import TextNotFound, album_review, artist_bio
+from . import local
 from .library import SCANNER, local_enabled
 from .stats import db_path_from_config
 from .tidal import TidalBackendMissing, TidalNotLoggedIn, TidalUnavailable, get_session
@@ -98,6 +105,8 @@ def factory(config, core):
         (r"/audio/active", AudioActiveHandler, common),
         (r"/audio/visualizer", VisualizerWebSocket, common),
         (r"/library/scan", LibraryScanHandler, common),
+        (r"/local/album", LocalAlbumHandler, common),
+        (r"/local/album/match", LocalAlbumMatchHandler, common),
     ]
 
 
@@ -152,6 +161,7 @@ class HealthHandler(_Base):
                 "audio": True,
                 "visualizer": visualizer_active(self.config),
                 "library_scan": local_enabled(self.config),
+                "local_metadata": local.available(self.config),
             },
         }))
 
@@ -550,6 +560,51 @@ class LibraryScanHandler(_Base):
     def _write_status(self):
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps(SCANNER.status()))
+
+
+# ── local album metadata ──────────────────────────────────────────────
+
+
+class _LocalBase(_Base):
+    def _album_uri(self):
+        uri = self.get_query_argument("uri", "")
+        if not uri.startswith("local:album:"):
+            raise HTTPError(400, reason="'uri' must be a local:album: URI")
+        if not local.available(self.config):
+            raise HTTPError(503, reason="mopidy-local media dir or mutagen not available")
+        return uri
+
+
+class LocalAlbumHandler(_LocalBase):
+    """Edition data + credits from the album's own tags, and its Tidal match
+    (which clients use for the review / artist bio endpoints)."""
+
+    async def get(self):
+        from tornado.ioloop import IOLoop
+
+        uri = self._album_uri()
+        try:
+            session = get_session(self.core)
+        except TidalUnavailable:
+            session = None  # still serve tags; just no Tidal match
+        db = local.db_path_from_config(self.config)
+        try:
+            info = await IOLoop.current().run_in_executor(
+                None, local.album_info, self.core, self.config, session, uri, db
+            )
+        except local.NotLocal:
+            raise HTTPError(404, reason=f"no local files for {uri}")
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(info))
+
+
+class LocalAlbumMatchHandler(_LocalBase):
+    """Forget the stored Tidal match so the next GET matches again
+    (e.g. after retagging the album)."""
+
+    def delete(self):
+        local.forget_match(local.db_path_from_config(self.config), self._album_uri())
+        self.set_status(204)
 
 
 def _safe_int(s, default, lo=None, hi=None):

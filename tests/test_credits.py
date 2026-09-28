@@ -53,7 +53,7 @@ def test_maps_tracks_and_credits():
     result = album_credits(session, 158152)
     assert result["album_id"] == "158152"
     assert result["tracks"] == [{
-        "id": "101", "title": "T1", "version": None, "track_num": 1, "volume_num": 1,
+        "id": "101", "title": "T1", "version": None, "track_num": 1, "volume_num": 1, "isrc": None,
         "credits": [
             {"role": "Producer", "contributors": [{"name": "Richard Bock", "id": "8021563"}]},
             {"role": "Trumpet", "contributors": [{"name": "Chet Baker", "id": None}]},

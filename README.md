@@ -64,7 +64,8 @@ features to show in your client.
     "stats": true,
     "audio": true,
     "visualizer": false,
-    "library_scan": true
+    "library_scan": true,
+    "local_metadata": true
   }
 }
 ```
@@ -328,6 +329,46 @@ The bio also carries the artist's name and a 750×750 picture URL; `text` is
 }
 ```
 
+### Local album metadata
+
+```
+GET    /goodies/local/album?uri=local:album:…
+DELETE /goodies/local/album/match?uri=local:album:…
+```
+
+For `mopidy-local` albums: reads the album's own files (Picard-style Vorbis
+comments in FLAC, ID3 in DSF — as written by e.g. MusicBrainz Picard or
+drtagger) with [mutagen](https://mutagen.readthedocs.io/), and matches the
+music to Tidal so clients can show Tidal's review, artist bio and credits.
+
+```json
+{
+  "uri": "local:album:md5:…",
+  "edition": {
+    "label": "Sony", "catalog_number": "SICP-1704", "barcode": "4547366035155",
+    "country": "JP", "media": "CD", "musicbrainz_album_id": "…"
+  },
+  "tidal": { "album_id": "35986307", "artist_id": "8992", "title": "If You Want Blood You've Got It (Live)",
+             "method": "isrc", "score": 1.0 },
+  "credits_source": "tidal",
+  "credits": { "album_id": "local:album:md5:…", "tracks": [ { "id": "local:track:…", "isrc": "…", "credits": [ … ] } ] }
+}
+```
+
+- **Tidal match**, strongest first: `BARCODE` → Tidal album by UPC (exact
+  edition, but Tidal often lacks regional pressings); then the tracks' `ISRC`s
+  → vote for the Tidal album sharing the most recordings (`score` = share of
+  looked-up ISRCs found on it); then `MUSICBRAINZ_ALBUMID` → barcode on
+  MusicBrainz → UPC. Matches are stored in `data_dir/goodies/local.db`; misses
+  are retried after a week. `DELETE …/match` forgets one (e.g. after retagging).
+- **Credits** use the same shape as `/tidal/albums/<id>/credits`, keyed by local
+  track URI. Tag credits (`PERFORMER` as "Name (instrument)", `COMPOSER`,
+  `PRODUCER`, `ENGINEER`, `MIXER`…) win; tracks without them borrow the Tidal
+  credits of the same recording (by ISRC). `credits_source` is `tags`, `tidal`,
+  `mixed` or `null`.
+- Works without Tidal (`tidal` is then `null`). `503` if `mopidy-local`'s
+  media dir or mutagen isn't available; `404` if the album has no local files.
+
 ### Library scan
 
 ```
@@ -374,7 +415,7 @@ of the scan's output when it exits non-zero.
 - **v0.5** — live ALSA params + bit-perfect chain analysis. (0.5.1 splits 503/403 for not-loaded vs not-logged-in.)
 - **v0.6** — package renamed `mopidy-tidal-goodies` → `mopidy-goodies`; ext_name `tidal_goodies` → `goodies`.
 - **v0.7** — visualizer feed: WebSocket streaming raw PCM from a FIFO branch.
-- **v0.8** — trigger `mopidy local scan` over HTTP, with progress; Tidal album credits, reviews and artist bios. *(current)*
+- **v0.8** — trigger `mopidy local scan` over HTTP, with progress; Tidal album credits, reviews and artist bios; local album metadata + Tidal matching. *(current)*
 - **v0.9** — mutable Tidal playlists (create / add / remove / reorder).
 - **v0.10** — discovery: Your Mixes, mood radios.
 - **v0.11** — admin: force session refresh, cache stats.

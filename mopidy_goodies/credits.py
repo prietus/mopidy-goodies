@@ -73,6 +73,7 @@ def _track(entry):
         "version": item.get("version"),
         "track_num": item.get("trackNumber"),
         "volume_num": item.get("volumeNumber"),
+        "isrc": item.get("isrc"),
         "credits": [
             {
                 "role": c.get("type"),
