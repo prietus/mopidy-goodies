@@ -46,6 +46,12 @@ def test_id3_tags_as_written_to_dsf():
     assert roles == {"Drums": ["Nick Mason"], "Bass": ["Roger Waters"], "Producer": ["Pink Floyd"]}
 
 
+def test_first_skips_missing_values():
+    assert local._first([None, "  ", "SICP-1704"]) == "SICP-1704"
+    assert local._first([None, None]) is None
+    assert local._first(None) is None
+
+
 def test_track_path_stays_inside_media_dir(tmp_path):
     assert local.track_path(tmp_path, "local:track:rips/A%20B/01.flac") == (tmp_path / "rips/A B/01.flac").resolve()
     with pytest.raises(local.NotLocal):

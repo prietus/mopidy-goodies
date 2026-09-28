@@ -70,7 +70,7 @@ def read_tags(path):
 
 def _first(values):
     for v in values or []:
-        if str(v).strip():
+        if v is not None and str(v).strip():
             return str(v).strip()
     return None
 
