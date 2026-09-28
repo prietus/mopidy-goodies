@@ -262,14 +262,17 @@ def match_tidal(session, *, album_name, artist_name="", barcode, isrcs, mbid, tr
     """``{"album_id", "artist_id", "title", "method", "score", "same_album"}`` or None."""
     if barcode and (m := _by_barcode(session, barcode, "barcode")):
         return m
-    if isrcs and (m := _by_isrc(session, isrcs, album_name, track_count)):
-        return m
+    # A compilation found by ISRC is kept as a fallback (its credits are still the
+    # right recordings) while we look for the record itself.
+    recordings = _by_isrc(session, isrcs, album_name, track_count) if isrcs else None
+    if recordings and recordings["same_album"]:
+        return recordings
     if mbid and not barcode and (mb_barcode := _musicbrainz_barcode(mbid)):
         if m := _by_barcode(session, mb_barcode, "musicbrainz"):
             return m
-    if album_name and artist_name:
-        return _by_search(session, artist_name, album_name)
-    return None
+    if album_name and artist_name and (m := _by_search(session, artist_name, album_name)):
+        return m
+    return recordings
 
 
 def _by_barcode(session, barcode, method):

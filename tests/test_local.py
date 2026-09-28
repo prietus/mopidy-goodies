@@ -124,6 +124,20 @@ def test_same_record_beats_compilation_with_more_votes():
     assert (m["album_id"], m["same_album"]) == ("1", True)
 
 
+def test_search_finds_the_record_when_isrc_only_hits_a_compilation():
+    import tidalapi
+
+    box = _album(2, "The Complete Studio Albums (1970 - 1990)", 120)
+
+    class _Both(_Tidal):
+        def search(self, query, models=None, limit=None):
+            return {"albums": [NS(id=1, name="Degüello", num_tracks=10, artist=NS(id=4, name="ZZ Top"))]}
+
+    m = local.match_tidal(_Both(isrcs={"A": [box]}), album_name="Degüello", artist_name="ZZ Top",
+                          barcode=None, isrcs=["A"], mbid=None, track_count=10)
+    assert (m["album_id"], m["method"], m["same_album"]) == ("1", "search", True)
+
+
 def test_only_compilation_is_flagged_not_same_album():
     soundtrack = _album(5, "Singles - Original Motion Picture Soundtrack")
     tidal = _Tidal(isrcs={"A": [soundtrack]})
