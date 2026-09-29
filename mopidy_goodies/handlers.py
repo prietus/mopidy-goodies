@@ -24,9 +24,10 @@ ext_name as prefix). Three feature groups:
       GET    /goodies/stats/top-artists?limit=10&since=<unix>
       GET    /goodies/stats/top-albums?limit=10&since=<unix>
       GET    /goodies/stats/by-genre?limit=10&since=<unix>
-      GET    /goodies/stats/by-day-of-week
-      GET    /goodies/stats/by-hour
-      GET    /goodies/stats/totals
+      GET    /goodies/stats/by-day-of-week?since=<unix>
+      GET    /goodies/stats/by-hour?since=<unix>
+      GET    /goodies/stats/totals?since=<unix>
+      GET    /goodies/stats/top-labels?limit=10&since=<unix>
 
   Audio:
 
@@ -101,6 +102,7 @@ def factory(config, core):
         (r"/stats/by-day-of-week", StatsByDayOfWeekHandler, common),
         (r"/stats/by-hour", StatsByHourHandler, common),
         (r"/stats/totals", StatsTotalsHandler, common),
+        (r"/stats/top-labels", StatsTopLabelsHandler, common),
         (r"/audio/output", AudioOutputHandler, common),
         (r"/audio/active", AudioActiveHandler, common),
         (r"/audio/visualizer", VisualizerWebSocket, common),
@@ -320,6 +322,7 @@ class StatsMostPlayedHandler(_Base):
 
 class StatsTotalsHandler(_Base):
     def get(self):
+        where, params = _since_clause(self)
         conn = self._stats_db()
         try:
             row = conn.execute(
@@ -328,8 +331,9 @@ class StatsTotalsHandler(_Base):
                 " COUNT(DISTINCT track_uri),"
                 " COUNT(DISTINCT artist),"
                 " COUNT(DISTINCT artist || '|' || album),"
-                " (SELECT COUNT(*) FROM plays WHERE completed=1)"
-                " FROM plays WHERE artist != ''"
+                " COALESCE(SUM(completed), 0)"
+                f" FROM plays WHERE artist != '' {where}",
+                params,
             ).fetchone()
         finally:
             conn.close()
@@ -452,19 +456,49 @@ class StatsByGenreHandler(_Base):
         self.write(json.dumps(items))
 
 
+class StatsTopLabelsHandler(_Base):
+    """Record labels by listening time. Only plays with a known label (local
+    files whose tags carry one) count."""
+
+    def get(self):
+        limit = _safe_int(self.get_query_argument("limit", "10"), 10, 1, 200)
+        where, params = _since_clause(self)
+        params.append(limit)
+        conn = self._stats_db()
+        try:
+            rows = conn.execute(
+                f"SELECT label, COUNT(*) as plays, SUM(played_ms) as total_ms"
+                f" FROM plays WHERE label IS NOT NULL AND label != '' {where}"
+                f" GROUP BY label"
+                f" ORDER BY total_ms DESC, plays DESC"
+                f" LIMIT ?",
+                params,
+            ).fetchall()
+        finally:
+            conn.close()
+        items = [
+            {"label": r[0], "plays": r[1], "total_played_ms": r[2] or 0}
+            for r in rows
+        ]
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(items))
+
+
 class StatsByDayOfWeekHandler(_Base):
     """Bucketed by local-time day. 0=Sunday..6=Saturday (sqlite %w)."""
 
     def get(self):
+        where, params = _since_clause(self)
         conn = self._stats_db()
         try:
             rows = conn.execute(
                 "SELECT CAST(strftime('%w', played_at, 'unixepoch', 'localtime') AS INTEGER) as dow,"
                 " COUNT(*) as plays,"
                 " COALESCE(SUM(played_ms), 0) as total_ms"
-                " FROM plays"
+                f" FROM plays WHERE 1=1 {where}"
                 " GROUP BY dow"
-                " ORDER BY dow"
+                " ORDER BY dow",
+                params,
             ).fetchall()
         finally:
             conn.close()
@@ -483,15 +517,17 @@ class StatsByHourHandler(_Base):
     """Bucketed by local-time hour. 0..23."""
 
     def get(self):
+        where, params = _since_clause(self)
         conn = self._stats_db()
         try:
             rows = conn.execute(
                 "SELECT CAST(strftime('%H', played_at, 'unixepoch', 'localtime') AS INTEGER) as hour,"
                 " COUNT(*) as plays,"
                 " COALESCE(SUM(played_ms), 0) as total_ms"
-                " FROM plays"
+                f" FROM plays WHERE 1=1 {where}"
                 " GROUP BY hour"
-                " ORDER BY hour"
+                " ORDER BY hour",
+                params,
             ).fetchall()
         finally:
             conn.close()

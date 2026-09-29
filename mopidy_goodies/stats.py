@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS plays (
   album         TEXT NOT NULL DEFAULT '',
   album_uri     TEXT,                       -- for cover lookup; nullable
   genre         TEXT,                       -- nullable; missing for old rows
+  label         TEXT,                       -- record label, from local tags; nullable
   duration_ms   INTEGER NOT NULL DEFAULT 0,
   played_ms     INTEGER NOT NULL DEFAULT 0,
   completed     INTEGER NOT NULL DEFAULT 0  -- 1 if played >= 50% (scrobble-ish)
@@ -51,6 +52,7 @@ INDICES = (
     "CREATE INDEX IF NOT EXISTS idx_plays_track_uri ON plays(track_uri)",
     "CREATE INDEX IF NOT EXISTS idx_plays_artist ON plays(artist)",
     "CREATE INDEX IF NOT EXISTS idx_plays_genre ON plays(genre)",
+    "CREATE INDEX IF NOT EXISTS idx_plays_label ON plays(label)",
 )
 
 
@@ -61,6 +63,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE plays ADD COLUMN album_uri TEXT")
     if "genre" not in cols:
         conn.execute("ALTER TABLE plays ADD COLUMN genre TEXT")
+    if "label" not in cols:
+        conn.execute("ALTER TABLE plays ADD COLUMN label TEXT")
 
 
 def open_db(path: pathlib.Path) -> sqlite3.Connection:
@@ -107,6 +111,7 @@ class PlaybackHistoryFrontend(pykka.ThreadingActor, CoreListener):
         album = track.album.name if track.album and track.album.name else ""
         album_uri = track.album.uri if track.album and track.album.uri else None
         genre = track.genre or None
+        label = self._label(track.uri)
         duration_ms = int(track.length or 0)
         played_ms = int(time_position or 0)
         # Scrobble-like rule: ≥50% of length OR ≥4 minutes counts as completed.
@@ -117,8 +122,8 @@ class PlaybackHistoryFrontend(pykka.ThreadingActor, CoreListener):
         try:
             self.conn.execute(
                 "INSERT INTO plays (played_at, track_uri, track_name, artist,"
-                " album, album_uri, genre, duration_ms, played_ms, completed)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " album, album_uri, genre, label, duration_ms, played_ms, completed)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     int(time.time()),
                     track.uri,
@@ -127,6 +132,7 @@ class PlaybackHistoryFrontend(pykka.ThreadingActor, CoreListener):
                     album,
                     album_uri,
                     genre,
+                    label,
                     duration_ms,
                     played_ms,
                     completed,
@@ -134,3 +140,17 @@ class PlaybackHistoryFrontend(pykka.ThreadingActor, CoreListener):
             )
         except Exception as e:
             logger.warning("mopidy-goodies stats: insert failed: %s", e)
+
+    def _label(self, uri):
+        """Record label of a mopidy-local track, read from its tags. None for other
+        backends (Mopidy's Track model has no label) or when tags can't be read."""
+        from . import local
+
+        if not (uri or "").startswith("local:track:") or not local.available(self.config):
+            return None
+        try:
+            tags = local.read_tags(local.track_path(self.config["local"]["media_dir"], uri))
+        except Exception as e:
+            logger.debug("mopidy-goodies stats: no label for %s: %s", uri, e)
+            return None
+        return tags.get("label")
