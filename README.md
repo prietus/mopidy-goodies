@@ -63,6 +63,7 @@ features to show in your client.
     "texts": true,
     "isrc": true,
     "radio": true,
+    "playlists": true,
     "stats": true,
     "audio": true,
     "visualizer": false,
@@ -389,6 +390,33 @@ results are cached in memory.
   ]
 }
 ```
+
+### Tidal playlists
+
+```
+GET    /goodies/tidal/playlists
+POST   /goodies/tidal/playlists                 { "name": "Road Trip" }
+GET    /goodies/tidal/playlists/<id>
+PATCH  /goodies/tidal/playlists/<id>            { "name": "…" }
+DELETE /goodies/tidal/playlists/<id>
+POST   /goodies/tidal/playlists/<id>/tracks     { "uris": ["tidal:track:…", "local:track:…"] }
+DELETE /goodies/tidal/playlists/<id>/tracks/<index>
+POST   /goodies/tidal/playlists/<id>/move       { "from": 3, "to": 0 }
+```
+
+Create, rename, delete and edit your Tidal playlists. mopidy-tidal implements
+Mopidy's playlist API too, but it caches playlists and never sees its own
+renames, and removing a track right after a rename fails with HTTP 412 (a
+stale ETag). Every call here works on a playlist fetched fresh from Tidal, so
+edits apply and reads reflect them — play a playlist from the track URIs
+returned here rather than from `tidal:playlist:…` through Mopidy.
+
+- The list has your own playlists (`editable: true`) and then the ones you
+  follow (`editable: false`, read-only; `DELETE` unfollows them).
+- `…/tracks` appends Tidal *or local* tracks: local files are matched to the
+  same recording on Tidal (ISRC tag, else artist + title), as for radio. It
+  answers `{"added": n, "skipped": [uris not found on Tidal]}`.
+- `404` for unknown playlists or positions, `403` when editing one you follow.
 
 ### Local album metadata
 

@@ -42,15 +42,20 @@ def radio(session, core, config, uri, limit=100):
 
 
 def _resolve(session, core, config, uri):
-    parts = uri.split(":")
-    if uri.startswith("tidal:track:"):
-        return "track", session.track(parts[-1])
     if uri.startswith("tidal:artist:"):
-        return "artist", session.artist(parts[-1])
-    if uri.startswith("local:track:"):
-        return "track", _local_track(session, core, config, uri)
+        return "artist", session.artist(uri.split(":")[-1])
     if uri.startswith("local:artist:"):
         return "artist", _local_artist(session, core, uri)
+    return "track", tidal_track(session, core, config, uri)
+
+
+def tidal_track(session, core, config, uri):
+    """The Tidal track for a Mopidy track URI: itself for ``tidal:track:…``, the same
+    recording (by ISRC tag, else artist + title) for ``local:track:…``. Raises NoSeed."""
+    if uri.startswith("tidal:track:"):
+        return session.track(uri.split(":")[-1])
+    if uri.startswith("local:track:"):
+        return _local_track(session, core, config, uri)
     raise NoSeed(uri)
 
 
