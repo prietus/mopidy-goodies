@@ -115,10 +115,15 @@ GET /goodies/stats/most-played?limit=50&since=<unix>
 GET /goodies/stats/top-artists?limit=10&since=<unix>
 GET /goodies/stats/top-albums?limit=10&since=<unix>
 GET /goodies/stats/by-genre?limit=20&since=<unix>
-GET /goodies/stats/by-day-of-week
-GET /goodies/stats/by-hour
-GET /goodies/stats/totals
+GET /goodies/stats/top-labels?limit=10&since=<unix>
+GET /goodies/stats/by-day-of-week?since=<unix>
+GET /goodies/stats/by-hour?since=<unix>
+GET /goodies/stats/totals?since=<unix>
 ```
+
+Every endpoint except `recent` takes an optional `since` (unix seconds) to
+limit it to a period — e.g. the last week, month or year — so a client can
+offer Week / Month / Year / All Time views.
 
 `top-*` and `by-*` aggregations all rank by total played time. The
 `by-day-of-week` and `by-hour` endpoints bucket in the **server's local
@@ -128,9 +133,12 @@ timezone** (so "Sunday peak" reflects the user's actual Sunday). Days are
 A play is marked `completed` if it ran ≥50% of the track length OR ≥4 minutes
 (Last.fm-style scrobble rule).
 
-Genre and album cover URI are captured from Mopidy's Track model. Plays
-recorded by an older version of this plugin will have NULL there — those rows
-contribute to totals/top-artists/top-albums but not to top-genres or covers.
+Genre and album cover URI are captured from Mopidy's Track model. The record
+label is read from the file's own tags for `mopidy-local` tracks (same reader
+as the local album metadata, so it needs mutagen); other backends don't expose
+one, so `top-labels` only counts local plays. Plays recorded by an older
+version of this plugin have NULL in those columns — they still count towards
+totals / top artists / top albums, just not towards genres, labels or covers.
 
 ### Audio output
 
