@@ -62,6 +62,7 @@ features to show in your client.
     "credits": true,
     "texts": true,
     "isrc": true,
+    "radio": true,
     "stats": true,
     "audio": true,
     "visualizer": false,
@@ -357,6 +358,34 @@ compilations. `404` if Tidal has no available track for it. Cached in memory.
   "tracks": [
     { "uri": "tidal:track:8992:534050382:534050397", "title": "Bohemian Rhapsody", "artist": "Queen",
       "artist_uri": "tidal:artist:8992", "album": "A Night At The Opera", "album_uri": "tidal:album:534050382" }
+  ]
+}
+```
+
+### Tidal radio
+
+```
+GET    /goodies/tidal/radio?uri=<track or artist URI>&limit=100
+```
+
+A Tidal "radio" — up to 100 similar tracks — seeded from **any** Mopidy track
+or artist URI, so a client can offer *Start Radio* everywhere. mopidy-tidal
+doesn't expose Tidal's radios; tidalapi does:
+
+- `tidal:track:…` and `tidal:artist:<id>` seed it directly.
+- `local:track:…` finds the same recording on Tidal by the file's `ISRC` tag,
+  or by artist + title when there's none.
+- `local:artist:…` searches Tidal for the artist's name (exact match only).
+
+`404` when the seed can't be found on Tidal. Unavailable tracks are dropped;
+results are cached in memory.
+
+```json
+{
+  "seed": { "kind": "track", "title": "Bohemian Rhapsody", "artist": "Queen" },
+  "tracks": [
+    { "uri": "tidal:track:…", "title": "Stairway to Heaven (Remaster)", "artist": "Led Zeppelin",
+      "album": "Led Zeppelin IV (Remaster)", "album_uri": "tidal:album:…" }
   ]
 }
 ```
