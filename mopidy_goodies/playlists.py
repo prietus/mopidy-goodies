@@ -70,6 +70,10 @@ def add_tracks(session, core, config, playlist_id, uris):
     skipping local tracks that can't be found on Tidal."""
     ids, skipped = [], []
     for uri in uris:
+        if uri.startswith("tidal:track:"):
+            # The id is the URI's last part: no need to ask Tidal (100 tracks = 100 calls).
+            ids.append(uri.split(":")[-1])
+            continue
         try:
             ids.append(str(tidal_track(session, core, config, uri).id))
         except NoSeed:

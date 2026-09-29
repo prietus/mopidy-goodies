@@ -107,9 +107,10 @@ def test_add_tidal_and_local_tracks(monkeypatch):
     s = Session()
 
     def fake_tidal_track(session, core, config, uri):
+        assert uri.startswith("local:"), "Tidal URIs are added by id, without a lookup"
         if uri == "local:track:missing.flac":
             raise radio.NoSeed(uri)
-        return _t(int(uri.split(":")[-1]) if uri.startswith("tidal:") else 42)
+        return _t(42)
 
     monkeypatch.setattr(playlists, "tidal_track", fake_tidal_track)
     result = playlists.add_tracks(s, None, {}, s.own.id,
