@@ -16,6 +16,7 @@ ext_name as prefix). Three feature groups:
       GET    /goodies/tidal/albums/<id>/credits
       GET    /goodies/tidal/albums/<id>/review
       GET    /goodies/tidal/artists/<id>/bio
+      GET    /goodies/tidal/isrc/<ISRC>
 
   Stats — works for any backend (independent of mopidy-tidal).
 
@@ -57,6 +58,7 @@ from tornado.web import HTTPError, RequestHandler
 
 from . import __version__, audio
 from .credits import AlbumNotFound, album_credits
+from .isrc import NoTracks, tracks_by_isrc
 from .texts import TextNotFound, album_review, artist_bio
 from . import local
 from .library import SCANNER, local_enabled
@@ -94,6 +96,7 @@ def factory(config, core):
         (r"/tidal/albums/(\d+)/credits", TidalAlbumCreditsHandler, common),
         (r"/tidal/albums/(\d+)/review", TidalAlbumReviewHandler, common),
         (r"/tidal/artists/(\d+)/bio", TidalArtistBioHandler, common),
+        (r"/tidal/isrc/([A-Za-z0-9]{12})", TidalIsrcHandler, common),
         (r"/stats/recent", StatsRecentHandler, common),
         (r"/stats/most-played", StatsMostPlayedHandler, common),
         (r"/stats/top-artists", StatsTopArtistsHandler, common),
@@ -159,6 +162,7 @@ class HealthHandler(_Base):
                 "favorites_active": tidal_active,
                 "credits": True,
                 "texts": True,
+                "isrc": True,
                 "stats": True,
                 "audio": True,
                 "visualizer": visualizer_active(self.config),
@@ -205,7 +209,7 @@ class _TidalMetadataHandler(_Base):
         session = self._session()
         try:
             result = await IOLoop.current().run_in_executor(None, fetch, session, item_id)
-        except (AlbumNotFound, TextNotFound):
+        except (AlbumNotFound, TextNotFound, NoTracks):
             raise HTTPError(404, reason=not_found)
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps(result))
@@ -224,6 +228,13 @@ class TidalAlbumReviewHandler(_TidalMetadataHandler):
 
     async def get(self, album_id):
         await self._respond(album_review, album_id, f"no review for Tidal album {album_id}")
+
+
+class TidalIsrcHandler(_TidalMetadataHandler):
+    """Tidal tracks for an ISRC (e.g. from a Shazam match), best album first."""
+
+    async def get(self, isrc):
+        await self._respond(tracks_by_isrc, isrc, f"no Tidal track with ISRC {isrc}")
 
 
 class TidalArtistBioHandler(_TidalMetadataHandler):

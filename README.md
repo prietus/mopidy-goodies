@@ -61,6 +61,7 @@ features to show in your client.
     "favorites_active": true,
     "credits": true,
     "texts": true,
+    "isrc": true,
     "stats": true,
     "audio": true,
     "visualizer": false,
@@ -334,6 +335,29 @@ The bio also carries the artist's name and a 750×750 picture URL; `text` is
   "text": "Chet Baker was a primary exponent of the West Coast school of cool jazz…",
   "source": "TiVo",
   "last_updated": "2026-09-27T06:52:45.587+0000"
+}
+```
+
+### Tidal tracks by ISRC
+
+```
+GET    /goodies/tidal/isrc/<ISRC>
+```
+
+Tidal tracks for a recording's ISRC — for example one identified with Shazam /
+ShazamKit — so a client can play exactly that recording. The same ISRC is on
+the original album, reissues, compilations and soundtracks; Tidal's lookup
+doesn't say which is which, so results are ranked by album name: plain albums
+first, then editions ("Deluxe", "Remaster", "Live"…), then soundtracks, then
+compilations. `404` if Tidal has no available track for it. Cached in memory.
+
+```json
+{
+  "isrc": "GBUM71029604",
+  "tracks": [
+    { "uri": "tidal:track:8992:534050382:534050397", "title": "Bohemian Rhapsody", "artist": "Queen",
+      "artist_uri": "tidal:artist:8992", "album": "A Night At The Opera", "album_uri": "tidal:album:534050382" }
+  ]
 }
 ```
 
