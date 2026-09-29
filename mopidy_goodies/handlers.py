@@ -19,6 +19,17 @@ ext_name as prefix). Three feature groups:
       GET    /goodies/tidal/isrc/<ISRC>
       GET    /goodies/tidal/radio?uri=<track or artist URI>&limit=100
 
+  Tidal playlists (fresh from Tidal on every call):
+
+      GET    /goodies/tidal/playlists
+      POST   /goodies/tidal/playlists                 { "name": "…" }
+      GET    /goodies/tidal/playlists/<id>
+      PATCH  /goodies/tidal/playlists/<id>            { "name": "…" }
+      DELETE /goodies/tidal/playlists/<id>
+      POST   /goodies/tidal/playlists/<id>/tracks     { "uris": ["tidal:track:…", "local:track:…"] }
+      DELETE /goodies/tidal/playlists/<id>/tracks/<index>
+      POST   /goodies/tidal/playlists/<id>/move       { "from": 3, "to": 0 }
+
   Stats — works for any backend (independent of mopidy-tidal).
 
       GET    /goodies/stats/recent?limit=50
@@ -60,6 +71,7 @@ from tornado.web import HTTPError, RequestHandler
 from . import __version__, audio
 from .credits import AlbumNotFound, album_credits
 from .isrc import NoTracks, tracks_by_isrc
+from . import playlists
 from .radio import NoSeed
 from .radio import radio as tidal_radio
 from .texts import TextNotFound, album_review, artist_bio
@@ -101,6 +113,11 @@ def factory(config, core):
         (r"/tidal/artists/(\d+)/bio", TidalArtistBioHandler, common),
         (r"/tidal/isrc/([A-Za-z0-9]{12})", TidalIsrcHandler, common),
         (r"/tidal/radio", TidalRadioHandler, common),
+        (r"/tidal/playlists", TidalPlaylistsHandler, common),
+        (r"/tidal/playlists/([0-9a-fA-F-]{36})", TidalPlaylistHandler, common),
+        (r"/tidal/playlists/([0-9a-fA-F-]{36})/tracks", TidalPlaylistTracksHandler, common),
+        (r"/tidal/playlists/([0-9a-fA-F-]{36})/tracks/(\d+)", TidalPlaylistTrackHandler, common),
+        (r"/tidal/playlists/([0-9a-fA-F-]{36})/move", TidalPlaylistMoveHandler, common),
         (r"/stats/recent", StatsRecentHandler, common),
         (r"/stats/most-played", StatsMostPlayedHandler, common),
         (r"/stats/top-artists", StatsTopArtistsHandler, common),
@@ -168,6 +185,7 @@ class HealthHandler(_Base):
                 "texts": True,
                 "isrc": True,
                 "radio": True,
+                "playlists": True,
                 "stats": True,
                 "audio": True,
                 "visualizer": visualizer_active(self.config),
@@ -264,6 +282,81 @@ class TidalRadioHandler(_Base):
             raise HTTPError(404, reason=f"no Tidal radio for {uri}")
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps(result))
+
+
+class _PlaylistBase(_Base):
+    """Runs a playlists.* call off the IOLoop and maps its errors to HTTP."""
+
+    async def _run(self, fn, *args, status=200):
+        from tornado.ioloop import IOLoop
+
+        session = self._session()
+        try:
+            result = await IOLoop.current().run_in_executor(None, fn, session, *args)
+        except playlists.NotFound as e:
+            raise HTTPError(404, reason=f"not found: {e}")
+        except playlists.NotEditable:
+            raise HTTPError(403, reason="that playlist belongs to someone else")
+        self.set_status(status)
+        if result is not None and status != 204:
+            self.set_header("Content-Type", "application/json")
+            self.write(json.dumps(result))
+
+    def _body(self):
+        try:
+            return json.loads(self.request.body or b"{}")
+        except json.JSONDecodeError as e:
+            raise HTTPError(400, reason=f"invalid JSON: {e}")
+
+
+class TidalPlaylistsHandler(_PlaylistBase):
+    async def get(self):
+        await self._run(playlists.list_playlists)
+
+    async def post(self):
+        name = (self._body().get("name") or "").strip()
+        if not name:
+            raise HTTPError(400, reason="missing 'name'")
+        await self._run(playlists.create_playlist, name, status=201)
+
+
+class TidalPlaylistHandler(_PlaylistBase):
+    async def get(self, playlist_id):
+        await self._run(playlists.get_playlist, playlist_id)
+
+    async def patch(self, playlist_id):
+        name = (self._body().get("name") or "").strip()
+        if not name:
+            raise HTTPError(400, reason="missing 'name'")
+        await self._run(playlists.rename_playlist, playlist_id, name)
+
+    async def delete(self, playlist_id):
+        await self._run(playlists.delete_playlist, playlist_id, status=204)
+
+
+class TidalPlaylistTracksHandler(_PlaylistBase):
+    async def post(self, playlist_id):
+        uris = self._body().get("uris") or []
+        if not isinstance(uris, list) or not uris:
+            raise HTTPError(400, reason="missing 'uris'")
+        # add_tracks needs core + config to match local files to Tidal.
+        fn = lambda session, pid, u: playlists.add_tracks(session, self.core, self.config, pid, u)  # noqa: E731
+        await self._run(fn, playlist_id, [str(u) for u in uris])
+
+
+class TidalPlaylistTrackHandler(_PlaylistBase):
+    async def delete(self, playlist_id, index):
+        await self._run(playlists.remove_track, playlist_id, int(index), status=204)
+
+
+class TidalPlaylistMoveHandler(_PlaylistBase):
+    async def post(self, playlist_id):
+        body = self._body()
+        try:
+            src, dst = int(body["from"]), int(body["to"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPError(400, reason="need integer 'from' and 'to'")
+        await self._run(playlists.move_track, playlist_id, src, dst, status=204)
 
 
 class TidalArtistBioHandler(_TidalMetadataHandler):
