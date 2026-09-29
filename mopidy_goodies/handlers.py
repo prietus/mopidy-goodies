@@ -17,6 +17,7 @@ ext_name as prefix). Three feature groups:
       GET    /goodies/tidal/albums/<id>/review
       GET    /goodies/tidal/artists/<id>/bio
       GET    /goodies/tidal/isrc/<ISRC>
+      GET    /goodies/tidal/radio?uri=<track or artist URI>&limit=100
 
   Stats — works for any backend (independent of mopidy-tidal).
 
@@ -59,6 +60,8 @@ from tornado.web import HTTPError, RequestHandler
 from . import __version__, audio
 from .credits import AlbumNotFound, album_credits
 from .isrc import NoTracks, tracks_by_isrc
+from .radio import NoSeed
+from .radio import radio as tidal_radio
 from .texts import TextNotFound, album_review, artist_bio
 from . import local
 from .library import SCANNER, local_enabled
@@ -97,6 +100,7 @@ def factory(config, core):
         (r"/tidal/albums/(\d+)/review", TidalAlbumReviewHandler, common),
         (r"/tidal/artists/(\d+)/bio", TidalArtistBioHandler, common),
         (r"/tidal/isrc/([A-Za-z0-9]{12})", TidalIsrcHandler, common),
+        (r"/tidal/radio", TidalRadioHandler, common),
         (r"/stats/recent", StatsRecentHandler, common),
         (r"/stats/most-played", StatsMostPlayedHandler, common),
         (r"/stats/top-artists", StatsTopArtistsHandler, common),
@@ -163,6 +167,7 @@ class HealthHandler(_Base):
                 "credits": True,
                 "texts": True,
                 "isrc": True,
+                "radio": True,
                 "stats": True,
                 "audio": True,
                 "visualizer": visualizer_active(self.config),
@@ -235,6 +240,30 @@ class TidalIsrcHandler(_TidalMetadataHandler):
 
     async def get(self, isrc):
         await self._respond(tracks_by_isrc, isrc, f"no Tidal track with ISRC {isrc}")
+
+
+class TidalRadioHandler(_Base):
+    """Tidal radio (similar tracks) seeded from any track or artist URI, local or Tidal."""
+
+    async def get(self):
+        from tornado.ioloop import IOLoop
+
+        uri = self.get_query_argument("uri", "")
+        limit = _safe_int(self.get_query_argument("limit", "100"), 100, 1, 100)
+        if not uri:
+            raise HTTPError(400, reason="missing 'uri'")
+        session = self._session()
+        try:
+            result = await IOLoop.current().run_in_executor(
+                None, tidal_radio, session, self.core, self.config, uri, limit
+            )
+        except NoSeed:
+            raise HTTPError(404, reason=f"couldn't find {uri} on Tidal")
+        except Exception as e:  # ObjectNotFound for unknown ids, Tidal errors
+            logger.warning("goodies: Tidal radio for %s failed: %s", uri, e)
+            raise HTTPError(404, reason=f"no Tidal radio for {uri}")
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(result))
 
 
 class TidalArtistBioHandler(_TidalMetadataHandler):
