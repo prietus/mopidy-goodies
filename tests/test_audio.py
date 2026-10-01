@@ -456,6 +456,56 @@ def test_runtime_idle_keeps_chain(cards, tmp_path):
     assert info["chain"]["verdict"] == "bit-perfect"
 
 
+DSF_URI = "local:track:dsf/CARAVANSERAI/09%20-%20LA%20FUENTE%20DEL%20RITMO.dsf"
+
+
+def _runtime_for(cards, tmp_path, track_uri, params=HW_PARAMS_PLAYING):
+    _write_hw_params(tmp_path, 1, 0, 0, params)
+    return audio.runtime(
+        {"output": "alsasink device=hw:CARD=D90III,DEV=0", "mixer": "none"},
+        cards_path=cards,
+        proc_root=tmp_path,
+        track_uri=track_uri,
+    )
+
+
+def test_runtime_dsd_decoded_to_pcm_is_not_bit_perfect(cards, tmp_path):
+    chain = _runtime_for(cards, tmp_path, DSF_URI)["chain"]
+    assert chain["verdict"] == "not-bit-perfect"
+    assert chain["reason"] == "dsd-decoded-to-pcm"
+
+
+def test_runtime_native_dsd_stays_bit_perfect(cards, tmp_path):
+    native = HW_PARAMS_PLAYING.replace("S32_LE", "DSD_U32_BE")
+    assert "DSD_U32_BE" in native
+    chain = _runtime_for(cards, tmp_path, DSF_URI, params=native)["chain"]
+    assert chain["verdict"] == "bit-perfect"
+
+
+def test_runtime_pcm_track_stays_bit_perfect(cards, tmp_path):
+    chain = _runtime_for(cards, tmp_path, "local:track:flac/a.flac")["chain"]
+    assert chain["verdict"] == "bit-perfect"
+    assert "reason" not in chain
+
+
+def test_runtime_dsd_idle_keeps_static_verdict(cards, tmp_path):
+    # Nothing is open on the DAC, so there's no PCM conversion to report.
+    info = audio.runtime(
+        {"output": "alsasink device=hw:1,0", "mixer": "none"},
+        cards_path=cards,
+        proc_root=tmp_path,
+        track_uri=DSF_URI,
+    )
+    assert info["chain"]["verdict"] == "bit-perfect"
+
+
+def test_is_dsd_uri():
+    assert audio.is_dsd_uri(DSF_URI)
+    assert audio.is_dsd_uri("local:track:x/Y.DFF")
+    assert not audio.is_dsd_uri("local:track:x/y.flac")
+    assert not audio.is_dsd_uri(None)
+
+
 def test_runtime_non_alsa(cards, tmp_path):
     info = audio.runtime(
         {"output": "pulsesink", "mixer": "software"},

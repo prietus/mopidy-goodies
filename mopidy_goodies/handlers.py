@@ -696,9 +696,18 @@ class AudioActiveHandler(_Base):
 
     def get(self):
         cfg = self.config.get("audio") if self.config else None
-        info = audio.runtime(cfg)
+        info = audio.runtime(cfg, track_uri=self._current_track_uri())
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps(info))
+
+
+    def _current_track_uri(self):
+        """URI of the playing track, or ``None`` (nothing playing / no core)."""
+        try:
+            track = self.core.playback.get_current_track().get()
+            return getattr(track, "uri", None)
+        except Exception:
+            return None
 
 
 # ── library ────────────────────────────────────────────────────────────

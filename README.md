@@ -200,7 +200,12 @@ receiving right now. `chain` is a static analysis of the configured pipeline.
 - `"bit-perfect"` — `alsasink` bound directly to `hw:` (no `plughw:`, no
   `dmix`/`dsnoop`), `mixer = none`, no `audioresample`/`audioconvert` in the
   GStreamer bin spec.
-- `"not-bit-perfect"` — at least one of the conditions above fails.
+- `"not-bit-perfect"` — at least one of the conditions above fails. It is also
+  reported when the playing track is a DSD file (`.dsf`/`.dff`) and ALSA is
+  receiving PCM: GStreamer decodes DSD to PCM (DSD64 → `S32_LE` @ 352.8 kHz),
+  which is not a bit-perfect path. `chain.reason` is then
+  `"dsd-decoded-to-pcm"`. If ALSA really receives DSD (`alsa_format` starting
+  with `DSD_`) the verdict is not downgraded.
 - `"unknown"` — non-ALSA sink (`pulsesink`, `pipewiresink`, `autoaudiosink`,
   …) where bit-perfect-ness depends on the sound server's own config, which
   we can't see from here.

@@ -26,6 +26,7 @@ import logging
 import re
 import shlex
 from pathlib import Path
+from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +53,24 @@ def describe(audio_config, cards_path=DEFAULT_CARDS_PATH):
     return {"sink": sink, "device": device, "card": card}
 
 
+# GStreamer decodes DSD files to PCM (DSD64 → S32 @ 352.8 kHz) instead of
+# handing the 1-bit stream to the DAC, so a DSD source is never bit-perfect
+# unless ALSA really receives DSD.
+DSD_EXTENSIONS = (".dsf", ".dff", ".dsd")
+
+
+def is_dsd_uri(uri):
+    """True when a track URI points at a DSD file (``.dsf``/``.dff``)."""
+    if not uri:
+        return False
+    return unquote(uri.split("?", 1)[0]).lower().endswith(DSD_EXTENSIONS)
+
+
 def runtime(
     audio_config,
     cards_path=DEFAULT_CARDS_PATH,
     proc_root=DEFAULT_PROC_ROOT,
+    track_uri=None,
 ):
     """Combined runtime + static view of the audio chain.
 
@@ -64,7 +79,10 @@ def runtime(
     - ``active`` — ``True`` if ALSA has an open substream on the configured DAC
     - ``format`` — ``{rate, bits, channels, alsa_format}`` from
       ``/proc/asound/card<N>/pcm<DEV>p/sub0/hw_params``, or ``None`` if idle
-    - ``chain`` — static analysis of the pipeline (see :func:`analyze_chain`)
+    - ``chain`` — static analysis of the pipeline (see :func:`analyze_chain`).
+      When ``track_uri`` is a DSD file and ALSA is receiving PCM, a
+      ``"bit-perfect"`` verdict is downgraded to ``"not-bit-perfect"`` with
+      ``chain["reason"] = "dsd-decoded-to-pcm"``: GStreamer converted the DSD.
     """
     out = describe(audio_config, cards_path=cards_path)
     chain = analyze_chain(audio_config)
@@ -73,6 +91,13 @@ def runtime(
     if card_idx is not None:
         dev = _alsa_dev_index((out or {}).get("device") or "")
         fmt = read_hw_params(card_idx, dev=dev, proc_root=proc_root)
+    if (
+        fmt is not None
+        and chain.get("verdict") == "bit-perfect"
+        and is_dsd_uri(track_uri)
+        and not (fmt.get("alsa_format") or "").upper().startswith("DSD")
+    ):
+        chain = dict(chain, verdict="not-bit-perfect", reason="dsd-decoded-to-pcm")
     return {
         "output": out,
         "active": fmt is not None,
