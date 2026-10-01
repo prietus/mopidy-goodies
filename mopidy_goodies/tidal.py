@@ -39,6 +39,20 @@ def get_session(core):
     if backend is None:
         raise TidalBackendMissing("mopidy-tidal backend not loaded")
     proxy = backend.proxy() if hasattr(backend, "proxy") else backend
+    # Without a session, the `session` property of mopidy-tidal starts its
+    # interactive login, which sleeps in the backend actor for up to five
+    # minutes — and Mopidy's HTTP/MPD frontends wait on that actor. Never
+    # fall through to it unless the backend says it is logged in. Versions
+    # without a `logged_in` attribute keep the old probing.
+    try:
+        logged_in = _resolve(getattr(proxy, "logged_in", None))
+    except Exception:
+        logged_in = None
+    if logged_in is False:
+        raise TidalNotLoggedIn(
+            "mopidy-tidal is loaded but has no authenticated session — "
+            "authorize it through the login link, then retry."
+        )
     for attr in _SESSION_ATTRS:
         try:
             session = _resolve(getattr(proxy, attr, None))
