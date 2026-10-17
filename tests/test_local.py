@@ -244,3 +244,99 @@ def test_same_album_fills_credits_by_title(monkeypatch):
     assert source == "tidal" and out[0]["credits"][0]["role"] == "Piano"
     out, source = local._merge_credits(object(), per_track, {"album_id": "9", "same_album": False})
     assert source is None and out[0]["credits"] == []
+
+
+# ── local artists ─────────────────────────────────────────────────────
+
+
+def _artist(id_, name):
+    return NS(id=id_, name=name)
+
+
+class _ArtistTidal:
+    def __init__(self, isrcs=None, search=None):
+        self.isrcs = isrcs or {}
+        self.results = search or []
+        self.searches = []
+
+    def get_tracks_by_isrc(self, isrc):
+        return [NS(artists=artists) for artists in self.isrcs.get(isrc, [])]
+
+    def search(self, query, models=None, limit=None):
+        import tidalapi
+
+        assert models == [tidalapi.Artist]
+        self.searches.append(query)
+        return {"artists": self.results}
+
+
+def test_artist_by_isrc_votes_per_recording():
+    miles, namesake = _artist(55, "Miles Davis"), _artist(9, "Miles Davis Tribute")
+    # A recording on two editions credits Miles twice: still one vote.
+    tidal = _ArtistTidal(isrcs={"A": [[miles], [miles]], "B": [[miles, _artist(1, "John Coltrane")]], "C": [[namesake]]})
+    m = local.match_tidal_artist(tidal, name="Miles Davis", isrcs=["A", "B", "C"])
+    assert m == {"artist_id": "55", "name": "Miles Davis", "method": "isrc"}
+    assert tidal.searches == []
+
+
+def test_artist_search_needs_the_exact_name():
+    tidal = _ArtistTidal(search=[_artist(7, "Bill Evans Trio"), _artist(8, "Bill Evans")])
+    assert local.match_tidal_artist(tidal, name="Bill Evans", isrcs=[])["artist_id"] == "8"
+    assert local.match_tidal_artist(_ArtistTidal(search=[_artist(7, "Bill Evans Trio")]), name="Bill Evans", isrcs=[]) is None
+
+
+def test_artist_role_suffix_is_dropped():
+    tidal = _ArtistTidal(search=[_artist(3, "Abdel Rahman El Bacha")])
+    m = local.match_tidal_artist(tidal, name="Abdel Rahman El Bacha(piano)", isrcs=[])
+    assert (m["artist_id"], tidal.searches) == ("3", ["abdel rahman el bacha"])
+
+
+def _core(tracks_by_uri):
+    return NS(library=NS(lookup=lambda uris: NS(get=lambda: {u: tracks_by_uri.get(u, []) for u in uris})))
+
+
+def _local_track(uri, album_uri, artist_uri, artist_name):
+    a = NS(uri=artist_uri, name=artist_name)
+    return NS(uri=uri, artists=[a], album=NS(uri=album_uri, artists=[a]))
+
+
+def test_artist_info_matches_and_adds_bio(tmp_path, monkeypatch):
+    uri = "local:artist:md5:1"
+    tracks = [_local_track(f"local:track:a/{i}.flac", f"local:album:{i % 2}", uri, "Miles Davis") for i in range(4)]
+    monkeypatch.setattr(local, "_artist_isrcs", lambda media_dir, ts: ["A"])
+    monkeypatch.setattr(local, "artist_bio", lambda session, artist_id: {
+        "image": f"https://img/{artist_id}.jpg", "text": "Trumpeter.", "source": "TiVo"})
+    tidal = _ArtistTidal(isrcs={"A": [[_artist(55, "Miles Davis")]]})
+    config = {"local": {"media_dir": str(tmp_path)}}
+    info = local.artist_info(_core({uri: tracks}), config, tidal, uri, tmp_path / "local.db")
+    assert info == {
+        "uri": uri, "name": "Miles Davis",
+        "tidal": {"artist_id": "55", "name": "Miles Davis", "method": "isrc"},
+        "image": "https://img/55.jpg", "text": "Trumpeter.", "source": "TiVo",
+    }
+    # Cached: a second call doesn't match again.
+    monkeypatch.setattr(local, "match_tidal_artist", lambda *a, **k: pytest.fail("not cached"))
+    assert local.artist_info(_core({uri: tracks}), config, tidal, uri, tmp_path / "local.db")["tidal"]["artist_id"] == "55"
+
+
+def test_artist_info_without_tidal_or_for_placeholders(tmp_path, monkeypatch):
+    monkeypatch.setattr(local, "match_tidal_artist", lambda *a, **k: pytest.fail("must not match"))
+    config = {"local": {"media_dir": str(tmp_path)}}
+    va = "local:artist:md5:va"
+    core = _core({va: [_local_track("local:track:x.flac", "local:album:1", va, "Various Artists")]})
+    info = local.artist_info(core, config, object(), va, tmp_path / "local.db")
+    assert (info["name"], info["tidal"], info["image"]) == ("Various Artists", None, None)
+    info = local.artist_info(core, config, None, va, tmp_path / "local.db")  # Tidal not logged in
+    assert info["tidal"] is None
+    with pytest.raises(local.NotLocal):
+        local.artist_info(core, config, None, "local:artist:md5:nobody", tmp_path / "local.db")
+    with pytest.raises(local.NotLocal):
+        local.artist_info(core, config, None, "tidal:artist:1", tmp_path / "local.db")
+
+
+def test_artist_isrcs_one_per_album_first(tmp_path, monkeypatch):
+    tags = {"1": "AAA", "2": "AAA", "3": "BBB", "4": "CCC", "5": "DDD", "6": "EEE"}
+    monkeypatch.setattr(local, "read_tags", lambda path: {"isrc": tags[path.stem]})
+    tracks = [NS(uri=f"local:track:{i}.flac", album=NS(uri=f"local:album:{'x' if i < 3 else i}")) for i in range(1, 7)]
+    # Album x (tracks 1, 2) gives one ISRC up front; the cap of four is reached before track 6.
+    assert local._artist_isrcs(tmp_path, tracks) == ["AAA", "BBB", "CCC", "DDD"]

@@ -66,7 +66,8 @@ features to show in your client.
     "audio": true,
     "visualizer": false,
     "library_scan": true,
-    "local_metadata": true
+    "local_metadata": true,
+    "local_artists": true
   }
 }
 ```
@@ -465,6 +466,37 @@ music to Tidal so clients can show Tidal's review, artist bio and credits.
   `mixed` or `null`.
 - Works without Tidal (`tidal` is then `null`). `503` if `mopidy-local`'s
   media dir or mutagen isn't available; `404` if the album has no local files.
+
+### Local artists
+
+```
+GET    /goodies/local/artist?uri=local:artist:…
+DELETE /goodies/local/artist/match?uri=local:artist:…
+```
+
+`mopidy-local` has no artist images. This matches a local artist to Tidal and
+returns the Tidal artist's portrait and biography, so clients can show them as
+they do for Tidal artists.
+
+```json
+{
+  "uri": "local:artist:md5:…",
+  "name": "Miles Davis",
+  "tidal": { "artist_id": "55", "name": "Miles Davis", "method": "isrc" },
+  "image": "https://resources.tidal.com/images/…/750x750.jpg",
+  "text": "…",
+  "source": "TiVo"
+}
+```
+
+- **Match**: the `ISRC` tags of up to four of the artist's tracks (one per
+  album first) → the Tidal artist credited on those recordings, by vote;
+  otherwise a Tidal artist search accepting only the exact name (a trailing
+  role such as "Name(piano)" is ignored). Placeholders like "Various Artists"
+  are never matched. Stored with the album matches in `local.db`, misses
+  retried after a week; `DELETE …/match` forgets one (e.g. it picked a namesake).
+- `tidal`, `image`, `text` and `source` are `null` when there's no match, Tidal
+  has no picture/bio, or Tidal isn't logged in. Same `503` / `404` as albums.
 
 ### Library scan
 

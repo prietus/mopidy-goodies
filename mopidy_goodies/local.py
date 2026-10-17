@@ -20,6 +20,11 @@ not just shares recordings with it (a compilation or box set): clients should
 only show the review / bio when it's true. Credits by ISRC are right either way.
 
 Misses are remembered too and retried after ``_RETRY_MISS`` seconds.
+
+Local artists get the same treatment so clients can show a portrait and a
+biography (mopidy-local has no artist images): the Tidal artist credited on
+the recordings of their files (by ISRC), else a Tidal artist with exactly
+the same name. Matches share the SQLite cache, keyed by URI.
 """
 import difflib
 import importlib.util
@@ -37,6 +42,7 @@ import urllib.request
 
 from . import __version__
 from .credits import album_credits
+from .texts import artist_bio
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +383,126 @@ def _similar(a, b):
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
+# ── local artists ──────────────────────────────────────────────────────
+
+_MAX_ARTIST_ISRCS = 4
+# Placeholders taggers use for no particular artist: never matched.
+_NO_ARTIST = {"various artists", "various", "va", "anonymous", "unknown", "unknown artist"}
+_ROLE_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")  # "Abdel Rahman El Bacha(piano)"
+
+
+def artist_info(core, config, session, artist_uri, db_path):
+    """Name, Tidal match, portrait and bio of a local artist. ``session`` may be None."""
+    if not artist_uri.startswith("local:artist:"):
+        raise NotLocal(artist_uri)
+    tracks = core.library.lookup(uris=[artist_uri]).get().get(artist_uri) or []
+    if not tracks:
+        raise NotLocal(artist_uri)
+    name = _artist_name(tracks, artist_uri)
+
+    tidal = None
+    if session is not None and name and _norm(name) not in _NO_ARTIST:
+        tidal = _cached_match(db_path, artist_uri, lambda: match_tidal_artist(
+            session, name=name, isrcs=_artist_isrcs(config["local"]["media_dir"], tracks),
+        ))
+
+    bio = None
+    if tidal:
+        try:
+            bio = artist_bio(session, tidal["artist_id"])
+        except Exception as e:  # no bio and no picture: still return the match
+            logger.debug("goodies: Tidal bio for %s failed: %s", tidal["artist_id"], e)
+    return {
+        "uri": artist_uri,
+        "name": name,
+        "tidal": tidal,
+        "image": (bio or {}).get("image"),
+        "text": (bio or {}).get("text"),
+        "source": (bio or {}).get("source"),
+    }
+
+
+def _artist_name(tracks, artist_uri):
+    """The artist's own spelling, wherever the files credit them."""
+    for t in tracks:
+        people = list(t.artists or []) + list((t.album.artists if t.album else None) or [])
+        people += list(getattr(t, "composers", None) or []) + list(getattr(t, "performers", None) or [])
+        for a in people:
+            if a.uri == artist_uri and a.name:
+                return a.name
+    return ""
+
+
+def _artist_isrcs(media_dir, tracks):
+    """ISRCs of a few of the artist's tracks, one per album first so a single
+    odd record (a guest spot, a tribute) can't decide the vote."""
+    by_album, rest = {}, []
+    for t in tracks:
+        album = t.album.uri if t.album else None
+        (rest if album in by_album else by_album.setdefault(album, [])).append(t)
+    picks = [ts[0] for ts in by_album.values()] + rest
+    isrcs = []
+    for t in picks:
+        if len(isrcs) >= _MAX_ARTIST_ISRCS:
+            break
+        try:
+            isrc = read_tags(track_path(media_dir, t.uri)).get("isrc")
+        except Exception:
+            continue
+        if isrc and isrc.upper() not in isrcs:
+            isrcs.append(isrc.upper())
+    return isrcs
+
+
+def match_tidal_artist(session, *, name, isrcs):
+    """``{"artist_id", "name", "method"}`` or None."""
+    wanted = _norm(_ROLE_SUFFIX.sub("", name)) or _norm(name)
+    if isrcs and (m := _artist_by_isrc(session, isrcs, wanted)):
+        return m
+    return _artist_by_search(session, wanted)
+
+
+def _artist_by_isrc(session, isrcs, wanted):
+    def lookup(isrc):
+        try:
+            return session.get_tracks_by_isrc(isrc)
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lookup, isrcs))
+
+    votes, artists = {}, {}
+    for found in results:
+        credited = {}
+        for t in found:
+            for a in (getattr(t, "artists", None) or [getattr(t, "artist", None)]):
+                if a is not None and _similar(wanted, _norm(a.name)) >= 0.85:
+                    credited[a.id] = a
+        for a in credited.values():  # one vote per recording, however many editions
+            votes[a.id] = votes.get(a.id, 0) + 1
+            artists[a.id] = a
+    if not votes:
+        return None
+    best = max(votes, key=lambda i: (votes[i], _similar(wanted, _norm(artists[i].name))))
+    return {"artist_id": str(best), "name": artists[best].name, "method": "isrc"}
+
+
+def _artist_by_search(session, wanted):
+    import tidalapi
+
+    try:
+        found = session.search(wanted, models=[tidalapi.Artist], limit=10)
+    except Exception as e:
+        logger.debug("goodies: Tidal artist search failed: %s", e)
+        return None
+    # Only the exact name: a near miss is someone else as often as not.
+    for a in found.get("artists", []):
+        if _norm(a.name) == wanted:
+            return {"artist_id": str(a.id), "name": a.name, "method": "search"}
+    return None
+
+
 _mb_lock = threading.Lock()
 _mb_last = 0.0
 
@@ -409,7 +535,7 @@ def _connect(db_path):
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         "CREATE TABLE IF NOT EXISTS tidal_matches ("
-        " album_uri TEXT PRIMARY KEY,"
+        " album_uri TEXT PRIMARY KEY,"    # any local URI: albums and artists
         " result    TEXT,"            # JSON of match_tidal(), NULL for a miss
         " matched_at INTEGER NOT NULL)"
     )
@@ -435,10 +561,11 @@ def _cached_match(db_path, album_uri, compute):
         conn.close()
 
 
-def forget_match(db_path, album_uri):
+def forget_match(db_path, uri):
+    """Drop the stored match of a local album or artist."""
     conn = _connect(db_path)
     try:
-        conn.execute("DELETE FROM tidal_matches WHERE album_uri = ?", (album_uri,))
+        conn.execute("DELETE FROM tidal_matches WHERE album_uri = ?", (uri,))
         conn.commit()
     finally:
         conn.close()

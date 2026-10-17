@@ -53,6 +53,12 @@ ext_name as prefix). Three feature groups:
       GET    /goodies/local/album?uri=local:album:…
       DELETE /goodies/local/album/match?uri=local:album:…   (re-match next time)
 
+  Local artists — mopidy-local has no artist images: the matching Tidal
+  artist's portrait and bio (by ISRC of their files, else exact name).
+
+      GET    /goodies/local/artist?uri=local:artist:…
+      DELETE /goodies/local/artist/match?uri=local:artist:…
+
   Library — requires mopidy-local. Runs ``mopidy local scan`` in the background.
 
       POST   /goodies/library/scan              { "force": false }
@@ -133,6 +139,8 @@ def factory(config, core):
         (r"/library/scan", LibraryScanHandler, common),
         (r"/local/album", LocalAlbumHandler, common),
         (r"/local/album/match", LocalAlbumMatchHandler, common),
+        (r"/local/artist", LocalArtistHandler, common),
+        (r"/local/artist/match", LocalArtistMatchHandler, common),
     ]
 
 
@@ -191,6 +199,7 @@ class HealthHandler(_Base):
                 "visualizer": visualizer_active(self.config),
                 "library_scan": local_enabled(self.config),
                 "local_metadata": local.available(self.config),
+                "local_artists": local.available(self.config),
             },
         }))
 
@@ -745,9 +754,15 @@ class LibraryScanHandler(_Base):
 
 class _LocalBase(_Base):
     def _album_uri(self):
+        return self._local_uri("local:album:")
+
+    def _artist_uri(self):
+        return self._local_uri("local:artist:")
+
+    def _local_uri(self, prefix):
         uri = self.get_query_argument("uri", "")
-        if not uri.startswith("local:album:"):
-            raise HTTPError(400, reason="'uri' must be a local:album: URI")
+        if not uri.startswith(prefix):
+            raise HTTPError(400, reason=f"'uri' must be a {prefix} URI")
         if not local.available(self.config):
             raise HTTPError(503, reason="mopidy-local media dir or mutagen not available")
         return uri
@@ -782,6 +797,37 @@ class LocalAlbumMatchHandler(_LocalBase):
 
     def delete(self):
         local.forget_match(local.db_path_from_config(self.config), self._album_uri())
+        self.set_status(204)
+
+
+class LocalArtistHandler(_LocalBase):
+    """A local artist's Tidal match, portrait and bio (``image``/``text`` null
+    when there's no match or Tidal has none)."""
+
+    async def get(self):
+        from tornado.ioloop import IOLoop
+
+        uri = self._artist_uri()
+        try:
+            session = get_session(self.core)
+        except TidalUnavailable:
+            session = None  # still answer: name only, no match
+        db = local.db_path_from_config(self.config)
+        try:
+            info = await IOLoop.current().run_in_executor(
+                None, local.artist_info, self.core, self.config, session, uri, db
+            )
+        except local.NotLocal:
+            raise HTTPError(404, reason=f"no local tracks for {uri}")
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(info))
+
+
+class LocalArtistMatchHandler(_LocalBase):
+    """Forget the stored Tidal match of a local artist (e.g. it picked a namesake)."""
+
+    def delete(self):
+        local.forget_match(local.db_path_from_config(self.config), self._artist_uri())
         self.set_status(204)
 
 
