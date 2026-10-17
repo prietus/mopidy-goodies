@@ -95,7 +95,7 @@ from . import local
 from .library import SCANNER, local_enabled
 from .stats import db_path_from_config
 from .tidal import TidalBackendMissing, TidalNotLoggedIn, TidalUnavailable, get_session
-from .visualizer import VisualizerWebSocket, ensure_reader, visualizer_active
+from .visualizer import VisualizerWebSocket, ensure_reader, visualizer_active, visualizer_transport
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +105,9 @@ KINDS = ("album", "track", "artist", "playlist")
 
 
 def factory(config, core):
-    # Start the visualizer FIFO reader *before* GStreamer might try to
-    # write to it. filesink errors out (and tears down the whole audio
-    # bin) if there's no reader on the FIFO when it opens for writing;
-    # opening it lazily on first WS connect was too late.
+    # Start the visualizer reader before GStreamer starts sending. For a FIFO
+    # it must be: filesink can't open one that has no reader. (UDP doesn't
+    # care, but the reader still has to be up to receive.)
     from tornado.ioloop import IOLoop
     ensure_reader(config, IOLoop.current())
     common = {"core": core, "config": config}
@@ -223,6 +222,7 @@ class HealthHandler(_Base):
                 "stats": True,
                 "audio": True,
                 "visualizer": visualizer_active(self.config),
+                "visualizer_transport": visualizer_transport(self.config),
                 "library_scan": local_enabled(self.config),
                 "local_metadata": local.available(self.config),
                 "local_artists": local.available(self.config),

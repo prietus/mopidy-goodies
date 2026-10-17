@@ -110,3 +110,42 @@ def test_visualizer_active_path_missing(tmp_path):
 def test_visualizer_active_path_present(fifo_path):
     cfg = {"goodies": {"visualizer_fifo": fifo_path}}
     assert visualizer.visualizer_active(cfg) is True
+
+
+# ── UDP transport ─────────────────────────────────────────────────────
+
+
+def _free_udp_port():
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_udp_reader_emits_each_datagram():
+    import socket
+
+    port, loop = _free_udp_port(), _FakeLoop()
+    reader = visualizer.UdpReader(port, loop, on_chunk=None)
+    reader.start()
+    try:
+        assert reader.ready.wait(2)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as out:
+            for i in range(3):
+                out.sendto(bytes([i]) * 4096, ("127.0.0.1", port))
+        got = _drain(loop, 3 * 4096)
+        assert got == b"\x00" * 4096 + b"\x01" * 4096 + b"\x02" * 4096
+        assert [len(c) for c in loop.chunks] == [4096, 4096, 4096]  # one chunk per datagram
+    finally:
+        reader.stop()
+        reader.join(2)
+    assert not reader.is_alive()
+
+
+def test_transport_prefers_udp(fifo_path):
+    both = {"goodies": {"visualizer_udp_port": 5555, "visualizer_fifo": fifo_path}}
+    assert visualizer.visualizer_transport(both) == "udp"
+    assert visualizer.visualizer_transport({"goodies": {"visualizer_fifo": fifo_path}}) == "fifo"
+    assert visualizer.visualizer_transport({"goodies": {"visualizer_udp_port": None}}) is None
+    assert visualizer.visualizer_active({"goodies": {"visualizer_udp_port": 5555}})

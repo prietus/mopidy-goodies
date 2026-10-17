@@ -116,7 +116,7 @@ off, or to enable the optional visualizer feed:
 ```ini
 [goodies]
 enabled = true
-# visualizer_fifo = /tmp/mopidy-visualizer.fifo   # see "Visualizer feed" below
+# visualizer_udp_port = 5555   # see "Visualizer feed" below
 ```
 
 For **Tidal**, mopidy-tidal needs its own section. With `login_method = AUTO`,
@@ -186,6 +186,7 @@ features to show in your client.
     "stats": true,
     "audio": true,
     "visualizer": false,
+    "visualizer_transport": null,
     "library_scan": true,
     "local_metadata": true,
     "local_artists": true,
@@ -196,8 +197,8 @@ features to show in your client.
 }
 ```
 
-`visualizer` is `true` only when `[goodies] visualizer_fifo` points at a
-named pipe that exists. See [the visualizer section](#visualizer-feed-websocket).
+`visualizer` is `true` when the visualizer feed is set up; `visualizer_transport`
+says how (`udp`, or the older `fifo`). See [the visualizer section](#visualizer-feed-websocket).
 
 `favorites_active` is `false` when `mopidy-tidal` isn't loaded *or* isn't
 logged in. When clients hit the favorites endpoints in that state they get:
@@ -353,59 +354,43 @@ for distinguishing DSD (`DSD_U32_BE`) from PCM (`S32_LE`).
 WS /goodies/audio/visualizer
 ```
 
-Streams raw PCM chunks from a named pipe to all connected clients, one
-binary WebSocket message per chunk (~4 KiB ≈ 23 ms at 44.1 kHz stereo).
-Clients run their own FFT — typical use is a spectrum/bar visualizer in
-mopytui (terminal) or mopyrust (Tauri).
+Streams the audio as raw PCM — **S16LE, 44.1 kHz, stereo**, the convention
+clients assume — to every connected client, one binary message per chunk.
+Clients run their own FFT for a spectrum/bar display. (mopytui, which can also
+take the stream straight from Mopidy over UDP, uses the same format.)
 
-**Operator setup** (three steps; visualizer is opt-in):
+**Setup** (opt-in). Split `[audio] output` with a `tee`: one branch goes to your
+DAC untouched, the other is converted for the visualizer and sent to goodies
+over UDP on the same machine:
 
-1. In `mopidy.conf`, branch `[audio] output` with a `tee` so one rama
-   drives `alsasink` (keep this one bit-perfect) and the other writes
-   PCM to a FIFO. Format on the FIFO branch is up to you, but `S16LE @
-   44100, stereo` is the convention clients assume:
+```ini
+[audio]
+mixer = none
+output = tee name=t  t. ! queue ! alsasink device=hw:CARD=SABRE,DEV=0  t. ! queue leaky=downstream max-size-buffers=200 ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=44100,channels=2 ! udpsink host=127.0.0.1 port=5555 sync=false async=false
 
-   ```ini
-   [audio]
-   output = tee name=t
-     t. ! queue ! alsasink device=hw:CARD=SABRE,DEV=0 buffer-time=200000
-     t. ! queue leaky=downstream max-size-buffers=200
-        ! audioconvert ! audioresample
-        ! audio/x-raw,format=S16LE,rate=44100,channels=2
-        ! filesink location=/tmp/mopidy.fifo sync=false
-   ```
+[goodies]
+visualizer_udp_port = 5555
+```
 
-   (Same line in INI — wrapping is for readability.)
+(One line: `output` doesn't survive INI line continuations well. Put your own
+`alsasink` device in the first branch.) Restart Mopidy; `/goodies/_health`
+reports `"visualizer": true` and `"visualizer_transport": "udp"`.
 
-2. Create the FIFO once:
+**It doesn't touch what reaches your DAC.** Measured on a real server (FLAC
+16/44.1 and 24/96, DSF), capturing the DAC branch in the DAC's own format: the
+bytes are identical with and without the visualizer branch, and identical to the
+decoded FLAC. The conversion only happens on the visualizer's branch, and
+`/goodies/audio/active` still reports `bit-perfect` — it only looks at the
+branch that feeds `alsasink`.
 
-   ```sh
-   mkfifo /tmp/mopidy.fifo
-   ```
-
-3. Point goodies at it:
-
-   ```ini
-   [goodies]
-   visualizer_fifo = /tmp/mopidy.fifo
-   ```
-
-Restart Mopidy. `/goodies/_health` now reports `"visualizer": true`. The
-WS endpoint accepts connections immediately but only emits data while
-Mopidy is actually playing (no writer on the FIFO → reader blocks
-quietly, no error).
-
-**Caveats**:
-
-- The FIFO is **single-reader** at the kernel level; goodies opens it
-  once and fans out to every WS client, so multiple subscribers are fine
-  — but don't have another consumer (e.g. a local `cava`) opening the
-  same FIFO at the same time, or kernel splits the bytes between them.
-- The visualizer branch puts `audioresample`/`audioconvert` into the
-  pipeline, so `/goodies/audio/active` will report `verdict =
-  "not-bit-perfect"` even though the DAC's own branch is untouched. The
-  static chain check is text-based and can't tell that those elements
-  live on a side branch. Known limitation.
+**Why UDP, not a FIFO.** Earlier versions wrote the visualizer branch to a named
+pipe (`filesink location=…` + `visualizer_fifo`). That still works, but a pipe
+can stall playback: with nothing reading it, Mopidy hangs as soon as you press
+play; with a reader that stops reading, the pipe fills up and the track never
+ends, so the queue doesn't advance. Sending over UDP never blocks and needs no
+receiver: if goodies isn't listening the packets are simply dropped and the
+music plays on. To move over, replace the FIFO branch's `filesink …` with the
+`udpsink …` above, and `visualizer_fifo` with `visualizer_udp_port`.
 
 ### Tidal album credits
 
@@ -726,6 +711,8 @@ of the scan's output when it exits non-zero.
 
 ## History
 
+- **0.13** — the visualizer feed over UDP: unlike a FIFO it can't stall playback.
+  Measured: the visualizer branch leaves the DAC's bytes untouched.
 - **0.12** — packages for Debian, Ubuntu, Fedora and Arch, built and tested on
   each one, and `install.sh`. Mopidy 3.4 supported; mopidy-tidal optional.
   `_health` reports the Tidal session and versions.

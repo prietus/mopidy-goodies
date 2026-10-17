@@ -1,42 +1,41 @@
-"""Audio visualizer feed: stream raw PCM from a GStreamer FIFO over WebSocket.
+"""Audio visualizer feed: stream raw PCM from a GStreamer side branch over WebSocket.
 
-Setup (operator side):
+Setup (operator side): branch ``[audio] output`` with a ``tee`` so one branch
+drives ``alsasink`` (untouched, bit-perfect) and the other converts to S16LE
+44.1 kHz stereo (what clients assume) and sends it to goodies, which fans it out to every client on
+``ws://host:6680/goodies/audio/visualizer``.
 
-  1. In ``mopidy.conf`` ``[audio] output``, branch the pipeline with ``tee``
-     so one rama drives ``alsasink`` (bit-perfect) and the other writes
-     PCM to a FIFO. Single line — INI's continuation rules are too brittle
-     for a GStreamer bin spec::
+UDP (recommended)::
 
-       output = tee name=t  t. ! queue ! alsasink device=hw:CARD=SABRE,DEV=0 buffer-time=200000  t. ! queue leaky=downstream max-size-buffers=200 ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=48000,channels=2 ! filesink location=/tmp/mopidy.fifo sync=false
+  output = tee name=t  t. ! queue ! alsasink device=hw:CARD=SABRE,DEV=0  t. ! queue leaky=downstream max-size-buffers=200 ! audioconvert ! audioresample ! audio/x-raw,format=S16LE,rate=44100,channels=2 ! udpsink host=127.0.0.1 port=5555 sync=false async=false
 
-  2. ``mkfifo /tmp/mopidy.fifo`` (once).
-  3. ``[goodies] visualizer_fifo = /tmp/mopidy.fifo``.
+  [goodies]
+  visualizer_udp_port = 5555
 
-Clients connecting to ``ws://host:6680/goodies/audio/visualizer`` get raw
-binary frames as they arrive — interpret as ``S16LE`` at the rate/channels
-the operator configured on the FIFO branch (convention: 48 kHz stereo
-unless the operator changed it).
+A FIFO (``filesink location=…`` + ``visualizer_fifo``) also works but is
+fragile, and is kept only for existing setups. Measured on a real server:
+
+* With nobody reading the FIFO (goodies off, or not configured) ``filesink``
+  blocks opening it and Mopidy hangs on play.
+* With a reader that stops reading, the FIFO fills, ``filesink`` blocks in
+  ``write()`` and end-of-stream can't get past it: the track never ends and
+  the queue never advances. The DAC branch still gets every sample.
+
+UDP has neither problem: sending never blocks and needs no receiver (the
+datagrams are just dropped), and the DAC branch is byte-identical either way.
 
 Design notes:
 
-* GStreamer's ``filesink`` errors out if it tries to write to the FIFO
-  with no reader on the other end — and that error propagates through
-  the bin and kills the ``alsasink`` rama too. So the reader has to be
-  open *before* playback starts, not just when a WS client connects.
-  ``ensure_reader()`` starts a single process-wide ``FifoReader`` at
-  http-app factory time (once per Mopidy startup) and keeps it running
-  for the whole process lifetime. If no WS clients are connected the
-  thread still reads and discards — ~200 KB/s of memcpy is cheap.
-* The FIFO is single-reader by kernel contract. One ``FifoReader`` thread
-  per goodies process opens it; that thread fans chunks out to every
-  connected WebSocket.
-* Reads are blocking in a thread; broadcasts hop back to the Tornado
-  IOLoop via ``add_callback``. Never touch a ``WebSocketHandler`` from
-  the reader thread directly.
+* One process-wide reader (``ensure_reader()``, called at http-app factory
+  time) receives the PCM and fans it out to every connected WebSocket. With
+  the FIFO it must exist before playback starts, or ``filesink`` errors.
+* Reads block in a thread; broadcasts hop to the Tornado IOLoop via
+  ``add_callback``. Never touch a ``WebSocketHandler`` from the reader thread.
 """
 import logging
 import os
 import select
+import socket
 import threading
 import time
 
@@ -128,6 +127,56 @@ class FifoReader(threading.Thread):
             self.loop.add_callback(self.on_chunk, chunk)
 
 
+class UdpReader(threading.Thread):
+    """Receives the PCM datagrams ``udpsink`` sends to ``127.0.0.1:<port>``
+    and emits each via ``on_chunk(bytes)`` on the Tornado IOLoop thread."""
+
+    MAX_DATAGRAM = 65536
+
+    def __init__(self, port: int, loop: IOLoop, on_chunk, host: str = "127.0.0.1"):
+        super().__init__(daemon=True, name="goodies-visualizer-udp")
+        self.port = port
+        self.host = host
+        self.loop = loop
+        self.on_chunk = on_chunk
+        self._stopping = threading.Event()
+        self._sock = None
+        self.ready = threading.Event()  # bound and receiving (for tests)
+
+    def stop(self):
+        self._stopping.set()
+
+    def run(self):
+        while not self._stopping.is_set():
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((self.host, self.port))
+            except OSError:
+                logger.exception("visualizer: can't listen on udp %s:%d", self.host, self.port)
+                if self._stopping.wait(5.0):
+                    break
+                continue
+            # A timeout keeps the loop responsive to stop() without busy-waiting.
+            sock.settimeout(0.5)
+            logger.info("visualizer: listening on udp %s:%d", self.host, self.port)
+            self.ready.set()
+            try:
+                while not self._stopping.is_set():
+                    try:
+                        chunk = sock.recv(self.MAX_DATAGRAM)
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        logger.exception("visualizer: udp receive error")
+                        break
+                    if chunk:
+                        self.loop.add_callback(self.on_chunk, chunk)
+            finally:
+                sock.close()
+        logger.info("visualizer udp reader stopped")
+
+
 class VisualizerWebSocket(WebSocketHandler):
     """Registers/unregisters as a broadcast target. The actual FIFO read
     lives in the process-wide reader started by :func:`ensure_reader`."""
@@ -145,7 +194,7 @@ class VisualizerWebSocket(WebSocketHandler):
         return True
 
     def open(self):
-        if not _fifo_path(self.config):
+        if not visualizer_active(self.config):
             self.close(code=1011, reason="visualizer not configured")
             return
         VisualizerWebSocket._clients.add(self)
@@ -177,40 +226,59 @@ class VisualizerWebSocket(WebSocketHandler):
             cls._clients.discard(client)
 
 
-# Process-wide reader: started at http factory time so the FIFO has a
-# reader from before GStreamer ever tries to write to it. See module
-# docstring for why "lazy on first WS connect" doesn't work.
-_global_reader: FifoReader | None = None
+# Process-wide reader: started at http factory time so a FIFO has a reader
+# from before GStreamer ever tries to write to it.
+_global_reader: threading.Thread | None = None
 _global_reader_lock = threading.Lock()
 
 
 def ensure_reader(config, loop: IOLoop) -> None:
-    """Idempotently start the FIFO reader if ``visualizer_fifo`` is set.
+    """Idempotently start the reader for the configured transport: UDP
+    (``visualizer_udp_port``) if set, else the FIFO (``visualizer_fifo``).
 
     Called from the http app factory once per process. Safe to call
     multiple times — second and later calls are no-ops.
     """
     global _global_reader
-    fifo = _fifo_path(config)
-    if not fifo:
+    port, fifo = _udp_port(config), _fifo_path(config)
+    if not port and not fifo:
         return
     with _global_reader_lock:
         if _global_reader is not None and _global_reader.is_alive():
             return
-        _global_reader = FifoReader(fifo, loop, VisualizerWebSocket._broadcast)
+        if port:
+            _global_reader = UdpReader(port, loop, VisualizerWebSocket._broadcast)
+        else:
+            _global_reader = FifoReader(fifo, loop, VisualizerWebSocket._broadcast)
         _global_reader.start()
-        logger.info("visualizer: process-wide FIFO reader started for %s", fifo)
+        logger.info("visualizer: reader started (%s)", f"udp {port}" if port else fifo)
+
+
+def _section(config):
+    return (config or {}).get("goodies") or {}
+
+
+def _udp_port(config) -> int | None:
+    return _section(config).get("visualizer_udp_port") or None
 
 
 def _fifo_path(config) -> str | None:
     """Return the configured FIFO path if it exists on disk, else None."""
-    section = (config or {}).get("goodies") or {}
-    path = section.get("visualizer_fifo")
+    path = _section(config).get("visualizer_fifo")
     if path and os.path.exists(path):
         return path
     return None
 
 
+def visualizer_transport(config) -> str | None:
+    """``"udp"``, ``"fifo"`` or None when the visualizer isn't set up."""
+    if _udp_port(config):
+        return "udp"
+    if _fifo_path(config):
+        return "fifo"
+    return None
+
+
 def visualizer_active(config) -> bool:
-    """True iff the FIFO path is configured and the file actually exists."""
-    return _fifo_path(config) is not None
+    """True when a UDP port is configured, or the FIFO path is configured and exists."""
+    return visualizer_transport(config) is not None

@@ -3,7 +3,7 @@ import pathlib
 
 from mopidy import config, ext
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,10 @@ class Extension(ext.Extension):
         # from it to connected clients. Optional — leaving it unset just
         # disables the visualizer endpoint.
         schema["visualizer_fifo"] = config.Path(optional=True)
+        # Preferred over the FIFO: the tee's visualizer branch ends in
+        # ``udpsink host=127.0.0.1 port=<this>``. Sending never blocks, so a
+        # missing or stuck reader can't stall playback (a FIFO can).
+        schema["visualizer_udp_port"] = config.Port(optional=True)
         return schema
 
     def setup(self, registry):
