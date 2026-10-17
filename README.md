@@ -1,46 +1,167 @@
-# Mopidy-Goodies
+<h1 align="center">mopidy-goodies</h1>
 
-HTTP companion endpoints for [Mopidy](https://mopidy.com/) that fill in gaps
-the core and its extensions don't expose: Tidal favorites (via
-[mopidy-tidal](https://github.com/EbbLabs/mopidy-tidal)), backend-agnostic
-listening stats, and live audio chain info (configured sink, ALSA params,
-bit-perfect verdict).
+<p align="center">
+  <b>The extras a hi-fi Mopidy server is missing</b> — what really reaches your DAC,
+  your listening stats, Tidal credits and reviews, covers and portraits for your own files.
+</p>
 
-It's a companion package — it does **not** replace any other Mopidy
-extension. Tidal-specific endpoints reuse the session that `mopidy-tidal`
-has already authenticated, so clients don't need their own OAuth flow.
-Stats and audio endpoints work with any backend.
+<p align="center">
+  <a href="https://github.com/prietus/mopidy-goodies/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/prietus/mopidy-goodies?sort=semver"></a>
+  <a href="https://github.com/prietus/mopidy-goodies/actions/workflows/packages.yml"><img alt="Packages" src="https://github.com/prietus/mopidy-goodies/actions/workflows/packages.yml/badge.svg"></a>
+  <img alt="Mopidy 3.4 and 4" src="https://img.shields.io/badge/Mopidy-3.4%20%7C%204-ff6c00">
+  <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue">
+</p>
 
-> **Renamed from `mopidy-tidal-goodies` (v0.6.0).** Stats and audio endpoints
-> are backend-agnostic, so the old name was misleading. See the migration
-> note at the bottom of this README if you're upgrading.
+[Mopidy](https://mopidy.com/) plays your music files and Tidal beautifully, but
+its API stops short of what a good remote needs. **mopidy-goodies** is a Mopidy
+extension that adds it, as plain HTTP endpoints under `/goodies/` on the port
+Mopidy already uses. Install it on the machine that runs Mopidy; your apps light
+up the extra features on their own, and simply hide them on servers without it.
 
-## Why this exists
+## What it adds
 
-Adding everything upstream is slow (review cycles, maintainer scope), and a
-fair amount of what's here is too client-specific or host-specific to belong
-in any single extension. This package fills the gap on your own server, on
-your own release cadence.
+| | |
+|---|---|
+| 🎚️ **Signal path** | The real format reaching the DAC (from ALSA, not the file's tags) and whether the chain is **bit-perfect**. A warning when the DAC is unplugged or off. |
+| 📊 **Listening stats** | Every play is recorded on the server: totals, top artists, albums, genres and labels, by day of the week and hour, most played and recent — for any week, month, year or all time. |
+| 🎼 **Tidal, deeper** | Album **credits** (producers, engineers, every musician), editorial **reviews**, artist **biographies**, **favourites**, **radios** from any track or artist, and **playlists** you can create and edit. |
+| 💿 **Your own files** | Pressing data from the tags (label, catalogue number, country), credits, and the same review and biography from the matching Tidal album. **Portraits** for local artists, artists spelled several ways shown **as one**, and every image in an album's folder (scans of the booklet, OBI, disc…) to **pick the cover** from. |
+| 🔄 **Library scans** | Run `mopidy local scan` from the app, with progress — no SSH. |
+| 🎵 **Visualizer feed** | Raw PCM over a WebSocket for spectrum displays (optional). |
+
+Everything that needs Tidal uses the session [mopidy-tidal](https://github.com/EbbLabs/mopidy-tidal)
+already has: no extra login. Stats, signal path and local features work with any backend.
+
+## Apps that use it
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### Pymote
+
+A hi-fi remote for Mopidy for **iPhone and iPad**: your files and Tidal in one
+library, credits, reviews, synced lyrics, stats, Identify Song and the signal
+path, bit-perfect included.
+
+<a href="https://apps.apple.com/app/pymote-mopidy-hifi-remote/id6817096653">App Store</a> ·
+<a href="https://pymote.priet.us">pymote.priet.us</a>
+
+</td>
+<td width="50%" valign="top">
+
+### mopytui
+
+A feature-rich **terminal** client for Mopidy: cover art in the terminal (Kitty,
+iTerm2, Sixel), Tidal, lyrics, credits, stats and a spectrum visualizer.
+
+<a href="https://github.com/prietus/mopytui">github.com/prietus/mopytui</a>
+
+</td>
+</tr>
+</table>
+
+Building your own client? The [endpoints](#endpoints) below are plain JSON over HTTP;
+start with [`/goodies/_health`](#discovery) to see what a server offers.
 
 ## Install
 
-On your Mopidy host:
+On the machine that runs Mopidy, one command installs Mopidy (if it's missing),
+mopidy-goodies and, if you ask, mopidy-local and mopidy-tidal:
 
 ```sh
-pip install git+https://github.com/prietus/mopidy-goodies.git
+curl -fsSL https://raw.githubusercontent.com/prietus/mopidy-goodies/master/install.sh | sh -s -- --local --tidal
 ```
 
-Then enable in `mopidy.conf`:
+Leave out `--local` (your own music files) or `--tidal` (Tidal streaming) if you
+don't use them. Works on **Debian 13, Ubuntu 24.04+, Fedora 44+ and Arch Linux**;
+it takes care of what each distribution lacks (see [Notes per distribution](#notes-per-distribution)).
+
+Then restart Mopidy: `sudo systemctl restart mopidy`, or
+`systemctl --user restart mopidy` if it runs as your user.
+
+<details>
+<summary><b>Or install a package yourself</b></summary>
+
+Every [release](https://github.com/prietus/mopidy-goodies/releases/latest) has
+packages, built and tested on each distribution with its own Mopidy:
+
+| Distribution | Mopidy it ships | Install |
+|---|---|---|
+| Debian 13 · Ubuntu 24.04+ | 3.4 | `sudo apt install ./mopidy-goodies_X.Y.Z_all.deb` |
+| Fedora 44+ | 4 | `sudo dnf install ./mopidy-goodies-X.Y.Z-1.fc44.noarch.rpm` |
+| Arch Linux | 4 | `sudo pacman -U mopidy-goodies-X.Y.Z-1-any.pkg.tar.zst`, or from the AUR: [`mopidy-goodies-git`](https://aur.archlinux.org/packages/mopidy-goodies-git) |
+
+Anywhere else, with pip into the Python that runs Mopidy:
+
+```sh
+pip install "mopidy-goodies[tidal] @ git+https://github.com/prietus/mopidy-goodies.git"
+```
+
+</details>
+
+### Check it's working
+
+```sh
+curl http://localhost:6680/goodies/_health
+```
+
+lists the version and the features available on this server.
+
+## Configure
+
+mopidy-goodies works without any configuration. It's on by default; to turn it
+off, or to enable the optional visualizer feed:
 
 ```ini
 [goodies]
 enabled = true
+# visualizer_fifo = /tmp/mopidy-visualizer.fifo   # see "Visualizer feed" below
 ```
 
-Restart Mopidy. Endpoints are mounted under `/goodies/` on whatever
-port your `[http]` extension is bound to (typically `6680`).
+For **Tidal**, mopidy-tidal needs its own section. With `login_method = AUTO`,
+Pymote and mopytui show the link to authorize the server the first time:
+
+```ini
+[tidal]
+enabled = true
+quality = LOSSLESS
+login_method = AUTO
+```
+
+For a **bit-perfect** path, send Mopidy straight to your DAC and leave volume to
+the DAC:
+
+```ini
+[audio]
+mixer = none
+output = alsasink device=hw:CARD=YourDAC
+```
+
+(`aplay -l` lists your card names.)
+
+### Updating Tidal
+
+Tidal changes its API now and then, and an old `tidalapi` stops working: Tidal
+browsing comes up empty. `/goodies/_health` reports the installed versions under
+`tidal`. To update, run the install command again with `--tidal` (on Arch:
+`yay -S python-mopidy-tidal-git`) and restart Mopidy.
+
+### Notes per distribution
+
+- **Debian 13** — its `mopidy-local` doesn't start on Python 3.13 (it needs
+  `imghdr`, which 3.13 removed): `install.sh --local` adds the
+  [`standard-imghdr`](https://pypi.org/project/standard-imghdr/) backport.
+- **Debian, Ubuntu, Fedora** — none of them packages mopidy-tidal, so it comes
+  from PyPI. Some of `tidalapi`'s dependencies don't build from source on recent
+  Python; `install.sh --tidal` takes those from the distribution instead.
+- **Fedora** — doesn't package mopidy-local either; `--local` installs it from PyPI.
+- **Arch** — mopidy-local and mopidy-tidal ([`python-mopidy-tidal-git`](https://aur.archlinux.org/packages/python-mopidy-tidal-git))
+  are in the AUR: the script uses `yay` or `paru` if you have one.
 
 ## Endpoints
+
+For client developers: everything is JSON over HTTP, under `/goodies/` on Mopidy's HTTP port.
 
 ### Discovery
 
@@ -70,7 +191,8 @@ features to show in your client.
     "local_artists": true,
     "local_artist_groups": true,
     "local_artwork": true
-  }
+  },
+  "tidal": { "session": "ok", "mopidy_tidal": "0.3.13", "tidalapi": "0.8.11" }
 }
 ```
 
@@ -84,6 +206,10 @@ logged in. When clients hit the favorites endpoints in that state they get:
 - `403` — backend loaded but no authenticated Tidal session; the operator
   needs to play any Tidal track in mopidy (e.g. via Iris or `mopidy-mpd`) to
   trigger mopidy-tidal's OAuth flow, then retry.
+
+`tidal.session` is `ok`, `logged_out` or `missing` (mopidy-tidal not loaded), with
+the installed `mopidy_tidal` and `tidalapi` versions (or `null`): when Tidal stops
+working, clients can suggest updating rather than show an empty library.
 
 `stats` and `audio` work for any backend (independent of Tidal).
 `library_scan` is `true` when `mopidy-local` is enabled.
@@ -598,19 +724,21 @@ progress:
 has compared the media dir with the library. `error` holds the last lines
 of the scan's output when it exits non-zero.
 
-## Roadmap
+## History
 
-- **v0.1** — favorites.
-- **v0.2** — listening history (recent / most-played / totals).
-- **v0.3** — aggregated stats (top artists/albums/genres, day-of-week, hour-of-day).
-- **v0.4** — audio output device info.
-- **v0.5** — live ALSA params + bit-perfect chain analysis. (0.5.1 splits 503/403 for not-loaded vs not-logged-in.)
-- **v0.6** — package renamed `mopidy-tidal-goodies` → `mopidy-goodies`; ext_name `tidal_goodies` → `goodies`.
-- **v0.7** — visualizer feed: WebSocket streaming raw PCM from a FIFO branch.
-- **v0.8** — trigger `mopidy local scan` over HTTP, with progress; Tidal album credits, reviews and artist bios; local album metadata + Tidal matching. *(current)*
-- **v0.9** — mutable Tidal playlists (create / add / remove / reorder).
-- **v0.10** — discovery: Your Mixes, mood radios.
-- **v0.11** — admin: force session refresh, cache stats.
+- **0.12** — packages for Debian, Ubuntu, Fedora and Arch, built and tested on
+  each one, and `install.sh`. Mopidy 3.4 supported; mopidy-tidal optional.
+  `_health` reports the Tidal session and versions.
+- **0.11** — local album artwork: every image in an album's files and folders,
+  and a chosen cover shared by every client.
+- **0.10** — local artists spelled several ways grouped as one.
+- **0.9** — portraits and biographies for local artists.
+- **0.8** — library scans over HTTP; Tidal credits, reviews, biographies, radio
+  and playlists; local album metadata matched to Tidal.
+- **0.7** — visualizer feed.
+- **0.6** — renamed `mopidy-tidal-goodies` → `mopidy-goodies`.
+- **0.5** — live ALSA parameters and the bit-perfect verdict.
+- **0.1 – 0.4** — Tidal favourites, listening history and stats, audio output info.
 
 ## Migrating from `mopidy-tidal-goodies`
 
@@ -630,7 +758,7 @@ mv <data_dir>/tidal_goodies <data_dir>/goodies
 
 # replace the old package
 pip uninstall mopidy-tidal-goodies
-pip install git+https://github.com/prietus/mopidy-goodies.git
+# then install mopidy-goodies as described in "Install" above
 
 sudo systemctl start mopidy
 ```
