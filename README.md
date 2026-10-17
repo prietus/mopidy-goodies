@@ -68,7 +68,8 @@ features to show in your client.
     "library_scan": true,
     "local_metadata": true,
     "local_artists": true,
-    "local_artist_groups": true
+    "local_artist_groups": true,
+    "local_artwork": true
   }
 }
 ```
@@ -524,6 +525,41 @@ which local artists are the same one, so clients can show them once:
 - `name` is the spelling to show (MusicBrainz-tagged first, then not in all
   caps, then most tracks); its URI comes first. Only groups of two or more.
   Nothing is renamed: fix the tags and rescan for a permanent cure.
+
+### Local album artwork
+
+```
+GET    /goodies/local/album/artwork?uri=local:album:…
+PUT    /goodies/local/album/artwork?uri=local:album:…   { "url": "<one of its images>" }
+DELETE /goodies/local/album/artwork?uri=local:album:…
+GET    /goodies/local/artwork
+GET    /goodies/local/artwork/file?path=<relative to media_dir>
+```
+
+`mopidy-local` only knows the images embedded in the files, and rips often embed
+something odd while the folder has proper scans. This lists both and lets you
+pick the cover — stored on the server, so every client shows the same one.
+
+```json
+{
+  "uri": "local:album:md5:…",
+  "selected": "/goodies/local/artwork/file?path=rips%2F…%2FCovers%2FCover_Face.jpg",
+  "images": [
+    { "url": "/local/cb0e…-419x413.jpeg", "name": "Embedded 1", "source": "embedded", "width": 419, "height": 413 },
+    { "url": "/goodies/local/artwork/file?path=…", "name": "Cover_Face.jpg", "source": "folder", "width": null, "height": null }
+  ]
+}
+```
+
+- **Folder images** come from the folders of the album's tracks (plus their
+  parent for per-disc folders like `CD1`), two levels down (`Covers/`,
+  `Scans/Booklet/`…): likely front covers first, then in natural order. URLs are
+  server-relative, like mopidy-local's own.
+- `PUT` picks one of the album's image URLs (`400` otherwise), `DELETE` goes
+  back to mopidy-local's. `GET /local/artwork` returns
+  `{"covers": {album_uri: url}}` for every pick, so clients can apply them
+  wherever covers show.
+- `…/file` serves images only, never outside `media_dir`.
 
 ### Library scan
 

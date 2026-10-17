@@ -60,6 +60,15 @@ ext_name as prefix). Three feature groups:
       DELETE /goodies/local/artist/match?uri=local:artist:…
       GET    /goodies/local/artists        (which local artists are the same one)
 
+  Local album artwork — the images embedded in the files and those in the
+  album's folders (scans), and which one to show as the cover.
+
+      GET    /goodies/local/album/artwork?uri=local:album:…
+      PUT    /goodies/local/album/artwork?uri=local:album:…   { "url": "<one of its images>" }
+      DELETE /goodies/local/album/artwork?uri=local:album:…   (back to mopidy-local's)
+      GET    /goodies/local/artwork                           (every chosen cover)
+      GET    /goodies/local/artwork/file?path=<relative to media_dir>
+
   Library — requires mopidy-local. Runs ``mopidy local scan`` in the background.
 
       POST   /goodies/library/scan              { "force": false }
@@ -75,7 +84,7 @@ import sqlite3
 
 from tornado.web import HTTPError, RequestHandler
 
-from . import __version__, audio
+from . import __version__, artwork, audio
 from .credits import AlbumNotFound, album_credits
 from .isrc import NoTracks, tracks_by_isrc
 from . import playlists
@@ -143,6 +152,9 @@ def factory(config, core):
         (r"/local/artist", LocalArtistHandler, common),
         (r"/local/artist/match", LocalArtistMatchHandler, common),
         (r"/local/artists", LocalArtistGroupsHandler, common),
+        (r"/local/album/artwork", LocalAlbumArtworkHandler, common),
+        (r"/local/artwork", LocalArtworkChoicesHandler, common),
+        (r"/local/artwork/file", LocalArtworkFileHandler, common),
     ]
 
 
@@ -203,6 +215,7 @@ class HealthHandler(_Base):
                 "local_metadata": local.available(self.config),
                 "local_artists": local.available(self.config),
                 "local_artist_groups": local_enabled(self.config),
+                "local_artwork": local.available(self.config),
             },
         }))
 
@@ -846,6 +859,76 @@ class LocalArtistGroupsHandler(_Base):
         groups = await IOLoop.current().run_in_executor(None, local.artist_groups, self.core, db)
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps({"groups": groups}))
+
+
+class LocalAlbumArtworkHandler(_LocalBase):
+    """A local album's images (embedded + folder scans) and its chosen cover."""
+
+    async def get(self):
+        from tornado.ioloop import IOLoop
+
+        self._write(await IOLoop.current().run_in_executor(None, self._artwork, self._album_uri()))
+
+    async def put(self):
+        from tornado.ioloop import IOLoop
+
+        uri = self._album_uri()
+        try:
+            url = json.loads(self.request.body or b"{}").get("url")
+        except ValueError:
+            raise HTTPError(400, reason="body must be JSON")
+        info = await IOLoop.current().run_in_executor(None, self._artwork, uri)
+        if url not in {image["url"] for image in info["images"]}:
+            raise HTTPError(400, reason="'url' must be one of the album's images")
+        artwork.choose(self._db(), uri, url)
+        self._write({**info, "selected": url})
+
+    def delete(self):
+        artwork.forget(self._db(), self._album_uri())
+        self.set_status(204)
+
+    def _artwork(self, uri):
+        try:
+            return artwork.album_artwork(self.core, self.config["local"]["media_dir"], uri, self._db())
+        except local.NotLocal:
+            raise HTTPError(404, reason=f"no local files for {uri}")
+
+    def _db(self):
+        return local.db_path_from_config(self.config)
+
+    def _write(self, info):
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(info))
+
+
+class LocalArtworkChoicesHandler(_Base):
+    """Every local album whose cover was picked: ``{"covers": {album_uri: url}}``."""
+
+    def get(self):
+        if not local.available(self.config):
+            raise HTTPError(503, reason="mopidy-local media dir or mutagen not available")
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps({"covers": artwork.choices(local.db_path_from_config(self.config))}))
+
+
+class LocalArtworkFileHandler(_Base):
+    """An image file from an album's folder (never outside media_dir, images only)."""
+
+    async def get(self):
+        from tornado.ioloop import IOLoop
+
+        if not local.available(self.config):
+            raise HTTPError(503, reason="mopidy-local media dir or mutagen not available")
+        rel = self.get_query_argument("path", "")
+        try:
+            data, content_type = await IOLoop.current().run_in_executor(
+                None, artwork.read_file, self.config["local"]["media_dir"], rel
+            )
+        except artwork.ArtworkFileNotFound:
+            raise HTTPError(404, reason="no such image")
+        self.set_header("Content-Type", content_type)
+        self.set_header("Cache-Control", "max-age=86400")
+        self.write(data)
 
 
 def _safe_int(s, default, lo=None, hi=None):
