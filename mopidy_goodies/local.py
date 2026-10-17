@@ -524,6 +524,10 @@ def artist_key(name):
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = re.sub(r"\s*(&|\+)\s*", " and ", s)
     s = re.sub(r"^\s*the\s+", "", s)
+    # "AC/DC, AC/DC": a multi-value tag naming the same artist twice is that artist.
+    parts = {re.sub(r"[\W_]+", "", p) for p in re.split(r"\s*[,;]\s*", s)} - {""}
+    if len(parts) == 1:
+        return parts.pop()
     return re.sub(r"[\W_]+", "", s)
 
 

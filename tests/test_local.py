@@ -354,7 +354,7 @@ def test_artist_tie_goes_to_the_closest_name():
 @pytest.mark.parametrize("a,b", [
     ("AC/DC", "AC-DC"), ("Led Zeppelin", "LED ZEPPELIN"), ("Barón Rojo", "Baron Rojo"),
     ("Diana Krall , ", "Diana Krall"), ("Simon & Garfunkel", "Simon and Garfunkel"),
-    ("The Black Crowes", "Black Crowes"),
+    ("The Black Crowes", "Black Crowes"), ("AC/DC, AC/DC", "AC/DC"), ("Cream; Cream", "Cream"),
 ])
 def test_artist_key_ignores_form(a, b):
     assert local.artist_key(a) == local.artist_key(b)
@@ -363,6 +363,7 @@ def test_artist_key_ignores_form(a, b):
 def test_artist_key_keeps_different_artists_apart():
     assert local.artist_key("Bill Evans") != local.artist_key("Bill Evans Trio")
     assert local.artist_key("Berliner Philharmoniker") != local.artist_key("Wiener Philharmoniker")
+    assert local.artist_key("Ella Fitzgerald, Joe Pass") != local.artist_key("Ella Fitzgerald")
 
 
 def _groups_core(refs, tracks):
