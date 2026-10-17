@@ -59,17 +59,18 @@ class FifoReader(threading.Thread):
         self.path = path
         self.loop = loop
         self.on_chunk = on_chunk
-        self._stop = threading.Event()
+        # Not "_stop": up to Python 3.12 that name is a Thread method join() calls.
+        self._stopping = threading.Event()
 
     def stop(self):
-        self._stop.set()
+        self._stopping.set()
 
     def run(self):
-        while not self._stop.is_set():
+        while not self._stopping.is_set():
             fd = self._open_nonblocking()
             if fd is None:
                 # Path missing or other open error — wait briefly and retry.
-                if self._stop.wait(1.0):
+                if self._stopping.wait(1.0):
                     break
                 continue
             try:
@@ -88,7 +89,7 @@ class FifoReader(threading.Thread):
         stuck there keep the process alive, so systemd ends up
         SIGKILL'ing mopidy on stop. ``O_NONBLOCK`` returns immediately
         regardless of writer state; we then ``select`` for readability,
-        which is interruptible by ``_stop``.
+        which is interruptible by ``_stopping``.
         """
         try:
             return os.open(self.path, os.O_RDONLY | os.O_NONBLOCK)
@@ -101,11 +102,11 @@ class FifoReader(threading.Thread):
 
     def _read_loop(self, fd: int) -> None:
         """Pump bytes from ``fd`` to ``on_chunk`` until EOF, error, or
-        ``_stop``. EOF (read returns 0 after writer closes) makes us
+        ``_stopping``. EOF (read returns 0 after writer closes) makes us
         return so the outer loop can re-open."""
-        # 0.5 s select timeout keeps the loop responsive to _stop without
+        # 0.5 s select timeout keeps the loop responsive to _stopping without
         # burning CPU when nothing's coming.
-        while not self._stop.is_set():
+        while not self._stopping.is_set():
             try:
                 ready, _, _ = select.select([fd], [], [], 0.5)
             except (OSError, InterruptedError):
@@ -116,7 +117,7 @@ class FifoReader(threading.Thread):
                 chunk = os.read(fd, CHUNK_BYTES)
             except BlockingIOError:
                 # select said ready but nothing actually there — rare race;
-                # just loop and check _stop again.
+                # just loop and check _stopping again.
                 continue
             except OSError:
                 logger.exception("visualizer FIFO read error")
