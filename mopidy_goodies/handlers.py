@@ -58,6 +58,7 @@ ext_name as prefix). Three feature groups:
 
       GET    /goodies/local/artist?uri=local:artist:…
       DELETE /goodies/local/artist/match?uri=local:artist:…
+      GET    /goodies/local/artists        (which local artists are the same one)
 
   Library — requires mopidy-local. Runs ``mopidy local scan`` in the background.
 
@@ -141,6 +142,7 @@ def factory(config, core):
         (r"/local/album/match", LocalAlbumMatchHandler, common),
         (r"/local/artist", LocalArtistHandler, common),
         (r"/local/artist/match", LocalArtistMatchHandler, common),
+        (r"/local/artists", LocalArtistGroupsHandler, common),
     ]
 
 
@@ -200,6 +202,7 @@ class HealthHandler(_Base):
                 "library_scan": local_enabled(self.config),
                 "local_metadata": local.available(self.config),
                 "local_artists": local.available(self.config),
+                "local_artist_groups": local_enabled(self.config),
             },
         }))
 
@@ -829,6 +832,20 @@ class LocalArtistMatchHandler(_LocalBase):
     def delete(self):
         local.forget_match(local.db_path_from_config(self.config), self._artist_uri())
         self.set_status(204)
+
+
+class LocalArtistGroupsHandler(_Base):
+    """Local artists that are one artist spelled differently (see local.artist_groups)."""
+
+    async def get(self):
+        from tornado.ioloop import IOLoop
+
+        if not local_enabled(self.config):
+            raise HTTPError(503, reason="mopidy-local is not enabled")
+        db = local.db_path_from_config(self.config)
+        groups = await IOLoop.current().run_in_executor(None, local.artist_groups, self.core, db)
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps({"groups": groups}))
 
 
 def _safe_int(s, default, lo=None, hi=None):

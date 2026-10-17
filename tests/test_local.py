@@ -346,3 +346,62 @@ def test_artist_tie_goes_to_the_closest_name():
     evans, hall = _artist(1158, "Bill Evans"), _artist(6013, "Jim Hall")
     tidal = _ArtistTidal(isrcs={"A": [[hall, evans]], "B": [[hall, evans]]})
     assert local.match_tidal_artist(tidal, name="Bill Evans & Jim Hall", isrcs=["A", "B"])["artist_id"] == "1158"
+
+
+# ── artist groups ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("a,b", [
+    ("AC/DC", "AC-DC"), ("Led Zeppelin", "LED ZEPPELIN"), ("Barón Rojo", "Baron Rojo"),
+    ("Diana Krall , ", "Diana Krall"), ("Simon & Garfunkel", "Simon and Garfunkel"),
+    ("The Black Crowes", "Black Crowes"),
+])
+def test_artist_key_ignores_form(a, b):
+    assert local.artist_key(a) == local.artist_key(b)
+
+
+def test_artist_key_keeps_different_artists_apart():
+    assert local.artist_key("Bill Evans") != local.artist_key("Bill Evans Trio")
+    assert local.artist_key("Berliner Philharmoniker") != local.artist_key("Wiener Philharmoniker")
+
+
+def _groups_core(refs, tracks):
+    return NS(library=NS(
+        browse=lambda uri: NS(get=lambda: [NS(uri=u, name=n, type="artist") for u, n in refs]),
+        lookup=lambda uris: NS(get=lambda: {u: tracks.get(u, []) for u in uris}),
+    ))
+
+
+def _tracks(uri, n, mbid=None):
+    a = NS(uri=uri, name="x", musicbrainz_id=mbid)
+    return [NS(artists=[a], album=NS(artists=[a])) for _ in range(n)]
+
+
+def test_artist_groups_by_form_and_display_name(tmp_path):
+    refs = [("u1", "AC-DC"), ("u2", "AC/DC"), ("u3", "AC/DC"), ("u4", "LED ZEPPELIN"),
+            ("u5", "Led Zeppelin"), ("u6", "Diana Krall , "), ("u7", "Diana Krall"), ("u8", "Bill Evans")]
+    tracks = {"u1": _tracks("u1", 57), "u2": _tracks("u2", 12), "u3": _tracks("u3", 33, mbid="66c662b6"),
+              "u4": _tracks("u4", 40), "u5": _tracks("u5", 3), "u6": _tracks("u6", 1), "u7": _tracks("u7", 35)}
+    groups = local.artist_groups(_groups_core(refs, tracks), tmp_path / "local.db")
+    assert groups == [
+        {"name": "AC/DC", "uris": ["u3", "u1", "u2"]},          # tagged first, then most tracks
+        {"name": "Diana Krall", "uris": ["u7", "u6"]},
+        {"name": "Led Zeppelin", "uris": ["u5", "u4"]},         # not shouting beats more tracks
+    ]
+
+
+def test_typos_group_only_when_tidal_agrees(tmp_path):
+    db = tmp_path / "local.db"
+    refs = [("b1", "David Bowie"), ("b2", "Davis Bowie"),
+            ("p1", "Berliner Philharmoniker, John Williams"), ("p2", "Wiener Philharmoniker, John Williams"),
+            ("e1", "Bill Evans"), ("e2", "Bill Evans & Jim Hall")]
+    for uri, artist_id in {"b1": "1", "b2": "1", "p1": "7", "p2": "8", "e1": "1158", "e2": "1158"}.items():
+        local._cached_match(db, f"local:artist:{uri}", lambda a=artist_id: {"artist_id": a, "name": "", "method": "isrc"})
+    refs = [(f"local:artist:{u}", n) for u, n in refs]
+    groups = local.artist_groups(_groups_core(refs, {}), db)
+    # Bowie's typo joins; the orchestras (different Tidal artists) and the duo (not close) don't.
+    assert groups == [{"name": "David Bowie", "uris": ["local:artist:b1", "local:artist:b2"]}]
+
+
+def test_no_groups(tmp_path):
+    assert local.artist_groups(_groups_core([("u1", "Cream")], {}), tmp_path / "local.db") == []

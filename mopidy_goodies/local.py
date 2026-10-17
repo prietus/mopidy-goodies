@@ -25,6 +25,11 @@ Local artists get the same treatment so clients can show a portrait and a
 biography (mopidy-local has no artist images): the Tidal artist credited on
 the recordings of their files (by ISRC), else a Tidal artist with exactly
 the same name. Matches share the SQLite cache, keyed by URI.
+
+mopidy-local also splits one artist into several when their files disagree:
+the URI hashes the name *and* the MusicBrainz id, so Picard-tagged and
+untagged albums of the same band are two artists, as are "AC/DC" and "AC-DC".
+``artist_groups`` lists which local artists are the same one, for display.
 """
 import difflib
 import importlib.util
@@ -36,6 +41,7 @@ import re
 import sqlite3
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 import urllib.parse
 import urllib.request
@@ -503,6 +509,102 @@ def _artist_by_search(session, wanted):
         if _norm(a.name) == wanted:
             return {"artist_id": str(a.id), "name": a.name, "method": "search"}
     return None
+
+
+# ── local artist groups ────────────────────────────────────────────────
+
+_TYPO_SIMILARITY = 0.85   # names this close are one artist if Tidal agrees
+
+
+def artist_key(name):
+    """What tells two spellings of an artist apart, once case, accents, punctuation,
+    a leading "The" and "&" vs "and" are ignored: "AC/DC" = "ac-dc" = "ACDC"."""
+    s = unicodedata.normalize("NFKD", (name or "").casefold())
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"\s*(&|\+)\s*", " and ", s)
+    s = re.sub(r"^\s*the\s+", "", s)
+    return re.sub(r"[\W_]+", "", s)
+
+
+def artist_groups(core, db_path):
+    """Local artists that are the same artist: ``[{"name", "uris"}]``, only groups of two
+    or more, the URI whose spelling is shown first.
+
+    Spellings that differ only in form (case, accents, punctuation…) always group.
+    Real typos ("Led Zepplin") group only when the names are close *and* both were
+    matched to the same Tidal artist — closeness alone would merge "Berliner
+    Philharmoniker" with "Wiener Philharmoniker". Only stored matches are used.
+    """
+    refs = core.library.browse(uri="local:directory?type=artist").get() or []
+    by_key = {}
+    for ref in refs:
+        if key := artist_key(ref.name):
+            by_key.setdefault(key, []).append(ref)
+    keys = list(by_key)
+    parent = {k: k for k in keys}
+
+    def find(k):
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    # Typos: within each Tidal artist, union the close spellings.
+    matched = _stored_artist_matches(db_path, [r.uri for refs_ in by_key.values() for r in refs_])
+    by_tidal = {}
+    for key, refs_ in by_key.items():
+        for tidal_id in {matched[r.uri] for r in refs_ if r.uri in matched}:
+            by_tidal.setdefault(tidal_id, []).append(key)
+    for group_keys in by_tidal.values():
+        for i, a in enumerate(group_keys):
+            for b in group_keys[i + 1:]:
+                if difflib.SequenceMatcher(None, a, b).ratio() >= _TYPO_SIMILARITY:
+                    parent[find(a)] = find(b)
+
+    merged = {}
+    for key in keys:
+        merged.setdefault(find(key), []).extend(by_key[key])
+    groups = [refs_ for refs_ in merged.values() if len(refs_) > 1]
+    if not groups:
+        return []
+
+    # Show a MusicBrainz-tagged spelling, else one not in all caps, else the one with most tracks.
+    uris = [r.uri for refs_ in groups for r in refs_]
+    tracks = core.library.lookup(uris=uris).get() or {}
+
+    def weight(ref):
+        ts = tracks.get(ref.uri) or []
+        tagged = any(
+            a.uri == ref.uri and getattr(a, "musicbrainz_id", None)
+            for t in ts for a in list(t.artists or []) + list((t.album.artists if t.album else None) or [])
+        )
+        return (tagged, not ref.name.isupper(), len(ts), -len(ref.name))
+
+    out = []
+    for refs_ in groups:
+        refs_ = sorted(refs_, key=weight, reverse=True)
+        out.append({"name": _tidy_name(refs_[0].name), "uris": [r.uri for r in refs_]})
+    return sorted(out, key=lambda g: artist_key(g["name"]))
+
+
+def _tidy_name(name):
+    """Drop the stray separators some taggers leave at the end ("Diana Krall , ")."""
+    return re.sub(r"[\s,;/\-]+$", "", name).strip() or name
+
+
+def _stored_artist_matches(db_path, uris):
+    """``{uri: tidal_artist_id}`` for the local artists already matched (never matches now)."""
+    if not uris:
+        return {}
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT album_uri, result FROM tidal_matches WHERE album_uri LIKE 'local:artist:%' AND result IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    wanted = set(uris)
+    return {uri: json.loads(result)["artist_id"] for uri, result in rows if uri in wanted}
 
 
 _mb_lock = threading.Lock()

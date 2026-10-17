@@ -67,7 +67,8 @@ features to show in your client.
     "visualizer": false,
     "library_scan": true,
     "local_metadata": true,
-    "local_artists": true
+    "local_artists": true,
+    "local_artist_groups": true
   }
 }
 ```
@@ -497,6 +498,32 @@ they do for Tidal artists.
   retried after a week; `DELETE …/match` forgets one (e.g. it picked a namesake).
 - `tidal`, `image`, `text` and `source` are `null` when there's no match, Tidal
   has no picture/bio, or Tidal isn't logged in. Same `503` / `404` as albums.
+
+### Local artist groups
+
+```
+GET    /goodies/local/artists
+```
+
+`mopidy-local` makes one artist out of each spelling *and* MusicBrainz id it
+finds, so a band whose albums are tagged differently shows up several times:
+"AC/DC" with and without a MusicBrainz id, "AC-DC", "LED ZEPPELIN"… This lists
+which local artists are the same one, so clients can show them once:
+
+```json
+{ "groups": [ { "name": "AC/DC", "uris": ["local:artist:md5:…", "local:artist:md5:…", "local:artist:md5:…"] } ] }
+```
+
+- Spellings that differ only in case, accents, punctuation, a leading "The",
+  "&" vs "and" or stray trailing separators always group.
+- Real typos ("Led Zepplin") group only when the names are at least 85 % alike
+  **and** both were already matched to the same Tidal artist by
+  `/local/artist` — closeness alone would merge "Berliner Philharmoniker" with
+  "Wiener Philharmoniker". No matching happens here, so a typo joins its group
+  once both spellings have been looked up.
+- `name` is the spelling to show (MusicBrainz-tagged first, then not in all
+  caps, then most tracks); its URI comes first. Only groups of two or more.
+  Nothing is renamed: fix the tags and rescan for a permanent cure.
 
 ### Library scan
 
