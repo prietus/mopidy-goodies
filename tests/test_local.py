@@ -340,3 +340,9 @@ def test_artist_isrcs_one_per_album_first(tmp_path, monkeypatch):
     tracks = [NS(uri=f"local:track:{i}.flac", album=NS(uri=f"local:album:{'x' if i < 3 else i}")) for i in range(1, 7)]
     # Album x (tracks 1, 2) gives one ISRC up front; the cap of four is reached before track 6.
     assert local._artist_isrcs(tmp_path, tracks) == ["AAA", "BBB", "CCC", "DDD"]
+
+
+def test_artist_tie_goes_to_the_closest_name():
+    evans, hall = _artist(1158, "Bill Evans"), _artist(6013, "Jim Hall")
+    tidal = _ArtistTidal(isrcs={"A": [[hall, evans]], "B": [[hall, evans]]})
+    assert local.match_tidal_artist(tidal, name="Bill Evans & Jim Hall", isrcs=["A", "B"])["artist_id"] == "1158"

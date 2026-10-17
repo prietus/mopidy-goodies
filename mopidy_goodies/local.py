@@ -484,7 +484,9 @@ def _artist_by_isrc(session, isrcs, wanted):
             artists[a.id] = a
     if not votes:
         return None
-    best = max(votes, key=lambda i: (votes[i], _similar(wanted, _norm(artists[i].name))))
+    # Ties (a duo credited together) go to the closest name; plain ratio here, since
+    # _similar() scores every member contained in "Bill Evans & Jim Hall" as 1.0.
+    best = max(votes, key=lambda i: (votes[i], difflib.SequenceMatcher(None, wanted, _norm(artists[i].name)).ratio()))
     return {"artist_id": str(best), "name": artists[best].name, "method": "isrc"}
 
 
