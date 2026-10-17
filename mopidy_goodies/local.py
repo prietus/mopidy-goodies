@@ -513,7 +513,8 @@ def _artist_by_search(session, wanted):
 
 # ── local artist groups ────────────────────────────────────────────────
 
-_TYPO_SIMILARITY = 0.85   # names this close are one artist if Tidal agrees
+_TYPO_SIMILARITY = 0.85   # names this close are one artist if Tidal agrees…
+_TYPO_EDITS = 2           # …and a slip of the keyboard apart, not a different soloist
 
 
 def artist_key(name):
@@ -531,9 +532,10 @@ def artist_groups(core, db_path):
     or more, the URI whose spelling is shown first.
 
     Spellings that differ only in form (case, accents, punctuation…) always group.
-    Real typos ("Led Zepplin") group only when the names are close *and* both were
-    matched to the same Tidal artist — closeness alone would merge "Berliner
-    Philharmoniker" with "Wiener Philharmoniker". Only stored matches are used.
+    Real typos ("Led Zepplin") group only when the names are a couple of keystrokes
+    apart *and* both were matched to the same Tidal artist — closeness alone would
+    merge "Berliner Philharmoniker" with "Wiener Philharmoniker", and Tidal alone
+    every credit naming the same conductor. Only stored matches are used.
     """
     refs = core.library.browse(uri="local:directory?type=artist").get() or []
     by_key = {}
@@ -558,7 +560,7 @@ def artist_groups(core, db_path):
     for group_keys in by_tidal.values():
         for i, a in enumerate(group_keys):
             for b in group_keys[i + 1:]:
-                if difflib.SequenceMatcher(None, a, b).ratio() >= _TYPO_SIMILARITY:
+                if _is_typo(a, b):
                     parent[find(a)] = find(b)
 
     merged = {}
@@ -585,6 +587,24 @@ def artist_groups(core, db_path):
         refs_ = sorted(refs_, key=weight, reverse=True)
         out.append({"name": _tidy_name(refs_[0].name), "uris": [r.uri for r in refs_]})
     return sorted(out, key=lambda g: artist_key(g["name"]))
+
+
+def _is_typo(a, b):
+    """Close keys a couple of keystrokes apart. Long credits sharing a long prefix
+    ("Petrenko, … Choir & Victor Galler" / "& Dmitry Kharpov") are similar but not typos."""
+    if abs(len(a) - len(b)) > _TYPO_EDITS or difflib.SequenceMatcher(None, a, b).ratio() < _TYPO_SIMILARITY:
+        return False
+    return _edit_distance(a, b) <= _TYPO_EDITS
+
+
+def _edit_distance(a, b):
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
 
 
 def _tidy_name(name):

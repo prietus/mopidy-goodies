@@ -394,13 +394,25 @@ def test_typos_group_only_when_tidal_agrees(tmp_path):
     db = tmp_path / "local.db"
     refs = [("b1", "David Bowie"), ("b2", "Davis Bowie"),
             ("p1", "Berliner Philharmoniker, John Williams"), ("p2", "Wiener Philharmoniker, John Williams"),
-            ("e1", "Bill Evans"), ("e2", "Bill Evans & Jim Hall")]
-    for uri, artist_id in {"b1": "1", "b2": "1", "p1": "7", "p2": "8", "e1": "1158", "e2": "1158"}.items():
+            ("e1", "Bill Evans"), ("e2", "Bill Evans & Jim Hall"),
+            ("k1", "Andrei Petrenko, Yekaterinburg Philharmonic Choir & Victor Galler"),
+            ("k2", "Andrei Petrenko, Yekaterinburg Philharmonic Choir & Dmitry Kharpov")]
+    ids = {"b1": "1", "b2": "1", "p1": "7", "p2": "8", "e1": "1158", "e2": "1158", "k1": "40", "k2": "40"}
+    for uri, artist_id in ids.items():
         local._cached_match(db, f"local:artist:{uri}", lambda a=artist_id: {"artist_id": a, "name": "", "method": "isrc"})
     refs = [(f"local:artist:{u}", n) for u, n in refs]
     groups = local.artist_groups(_groups_core(refs, {}), db)
-    # Bowie's typo joins; the orchestras (different Tidal artists) and the duo (not close) don't.
+    # Bowie's typo joins; the orchestras (different Tidal artists), the duo (not close) and
+    # the same choir with different soloists (close, same Tidal artist, but not a typo) don't.
     assert groups == [{"name": "David Bowie", "uris": ["local:artist:b1", "local:artist:b2"]}]
+
+
+@pytest.mark.parametrize("a,b,typo", [
+    ("davidbowie", "davisbowie", True), ("ledzeppelin", "ledzepplin", True),
+    ("billevans", "billevanstrio", False), ("berlinerphilharmoniker", "wienerphilharmoniker", False),
+])
+def test_is_typo(a, b, typo):
+    assert local._is_typo(a, b) is typo
 
 
 def test_no_groups(tmp_path):
