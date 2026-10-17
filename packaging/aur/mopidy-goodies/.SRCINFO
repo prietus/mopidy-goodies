@@ -1,0 +1,25 @@
+pkgbase = mopidy-goodies
+	pkgdesc = Mopidy extension with extra endpoints for hi-fi remote apps (bit-perfect info, stats, Tidal extras)
+	pkgver = 0.13.0
+	pkgrel = 1
+	url = https://github.com/prietus/mopidy-goodies
+	arch = any
+	license = Apache-2.0
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-wheel
+	makedepends = python-setuptools
+	depends = mopidy
+	depends = python-tornado
+	depends = python-pykka
+	depends = python-mutagen
+	optdepends = mopidy-local: local album metadata, artwork and library scans (AUR)
+	optdepends = python-mopidy-tidal-git: Tidal favourites, credits, reviews, radio and playlists (AUR)
+	provides = mopidy-tidal-goodies
+	conflicts = mopidy-goodies-git
+	conflicts = mopidy-tidal-goodies
+	conflicts = mopidy-tidal-goodies-git
+	source = https://github.com/prietus/mopidy-goodies/releases/download/v0.13.0/mopidy_goodies-0.13.0.tar.gz
+	sha256sums = e0c52bf1381fa9ab2e520846380bff06f4bae7dc97704113d8cdc8d7686c74ae
+
+pkgname = mopidy-goodies
