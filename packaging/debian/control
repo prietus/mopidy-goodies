@@ -1,0 +1,29 @@
+Source: mopidy-goodies
+Section: sound
+Priority: optional
+Maintainer: Carlos Prieto <cprieto.ortiz@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               pybuild-plugin-pyproject,
+               python3-all,
+               python3-setuptools,
+               python3-wheel
+Standards-Version: 4.7.0
+Homepage: https://github.com/prietus/mopidy-goodies
+Rules-Requires-Root: no
+
+Package: mopidy-goodies
+Architecture: all
+Depends: ${misc:Depends},
+         ${python3:Depends},
+         mopidy (>= 3.4),
+         python3-mutagen,
+         python3-pykka,
+         python3-tornado
+Recommends: mopidy-local
+Description: Mopidy extension with extra endpoints for hi-fi remote apps
+ Adds HTTP endpoints under /goodies/ to a Mopidy server: the real audio format
+ reaching the DAC and whether the path is bit-perfect, listening statistics,
+ local library scans, cover and credits for local albums, and — with
+ mopidy-tidal — Tidal favourites, credits, reviews, artist bios, radio and
+ playlists. Used by the Pymote and mopytui clients.

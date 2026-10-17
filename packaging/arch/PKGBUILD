@@ -1,0 +1,33 @@
+# Maintainer: Carlos Prieto <cprieto.ortiz@gmail.com>
+# Release package, built from the sdist of a tag (see packaging/scripts/build-arch.sh).
+# For the latest master, use packaging/aur/mopidy-goodies-git instead.
+pkgname=mopidy-goodies
+_pyname=mopidy_goodies
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Mopidy extension with extra endpoints for hi-fi remote apps (bit-perfect info, stats, Tidal extras)"
+arch=('any')
+url="https://github.com/prietus/mopidy-goodies"
+license=('Apache-2.0')
+depends=('mopidy' 'python-tornado' 'python-pykka' 'python-mutagen')
+makedepends=('python-build' 'python-installer' 'python-wheel' 'python-setuptools')
+optdepends=(
+  'mopidy-local: local album metadata, artwork and library scans (AUR)'
+  'python-mopidy-tidal-git: Tidal favourites, credits, reviews, radio and playlists (AUR)'
+)
+provides=('mopidy-tidal-goodies')
+conflicts=('mopidy-goodies-git' 'mopidy-tidal-goodies' 'mopidy-tidal-goodies-git')
+source=("${_pyname}-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "${_pyname}-${pkgver}"
+  python -m build --wheel --no-isolation
+}
+
+package() {
+  cd "${_pyname}-${pkgver}"
+  python -m installer --destdir="${pkgdir}" dist/*.whl
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

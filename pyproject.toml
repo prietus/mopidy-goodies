@@ -19,14 +19,16 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
+# Mopidy 3.4 (Debian, Ubuntu) and 4 (Arch, Fedora) both work. mopidy-tidal is
+# optional: no distro packages it, and stats, audio and local albums work without it.
 dependencies = [
-  "mopidy >= 4.0.0a2",
-  "mopidy-tidal",
+  "mopidy >= 3.4",
   "tornado >= 6.0",
   "mutagen",
 ]
 
 [project.optional-dependencies]
+tidal = ["mopidy-tidal"]
 test = ["pytest", "pytest-mock"]
 
 [project.entry-points."mopidy.ext"]

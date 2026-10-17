@@ -190,13 +190,25 @@ class _Base(RequestHandler):
         return sqlite3.connect(str(path))
 
 
+def _dist_version(name):
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
+
 class HealthHandler(_Base):
     def get(self):
         try:
             get_session(self.core)
-            tidal_active = True
+            tidal_session = "ok"
+        except TidalNotLoggedIn:
+            tidal_session = "logged_out"
         except TidalUnavailable:
-            tidal_active = False
+            tidal_session = "missing"
+        tidal_active = tidal_session == "ok"
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps({
             "version": __version__,
@@ -216,6 +228,13 @@ class HealthHandler(_Base):
                 "local_artists": local.available(self.config),
                 "local_artist_groups": local_enabled(self.config),
                 "local_artwork": local.available(self.config),
+            },
+            # What the server runs for Tidal: when Tidal changes its API an old tidalapi
+            # stops working, and clients can say "update" instead of showing nothing.
+            "tidal": {
+                "session": tidal_session,
+                "mopidy_tidal": _dist_version("mopidy-tidal") or _dist_version("Mopidy-Tidal"),
+                "tidalapi": _dist_version("tidalapi"),
             },
         }))
 

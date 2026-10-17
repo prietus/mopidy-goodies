@@ -1,0 +1,137 @@
+# Tests, then the distribution packages: built in each distribution's own
+# container, installed there with its own Mopidy and checked to load. A tag
+# (v1.2.3, matching pyproject.toml) publishes them as a GitHub release, which
+# is what install.sh downloads. Run it by hand to check a branch without
+# releasing anything.
+name: packages
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (Mopidy ${{ matrix.mopidy }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.4: Debian and Ubuntu. 4: Arch, Fedora and the AUR.
+        mopidy: ["3.4.2", "4"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: |
+          # GStreamer bindings for Mopidy's core (stats imports CoreListener).
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0 >/dev/null
+          python3 -m venv --system-site-packages venv
+          if [ "${{ matrix.mopidy }}" = "4" ]; then
+            venv/bin/pip install -q --pre "mopidy>=4.0.0a1"
+          else
+            venv/bin/pip install -q "mopidy==${{ matrix.mopidy }}" "setuptools<80"
+          fi
+          venv/bin/pip install -q -e ".[test]" tidalapi
+      - name: pytest
+        run: venv/bin/python -m pytest -q
+
+  sdist:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match pyproject.toml version $version"
+            exit 1
+          fi
+      - name: Build sdist and wheel
+        run: |
+          python3 -m pip install -q build
+          python3 -m build -o dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python
+          path: dist/*
+
+  package:
+    name: build ${{ matrix.format }}
+    needs: [test, sdist]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - { format: deb, image: "debian:trixie", script: build-debian.sh }
+          - { format: rpm, image: "fedora:latest", script: build-fedora.sh }
+          - { format: arch, image: "archlinux:latest", script: build-arch.sh }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: python, path: dist }
+      - name: Build in ${{ matrix.image }}
+        run: |
+          mkdir out
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/dist:/dist:ro" -v "$PWD/out:/out" ${{ matrix.image }} \
+            sh /src/packaging/scripts/${{ matrix.script }} /dist/mopidy_goodies-${{ needs.sdist.outputs.version }}.tar.gz /out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.format }}
+          path: out/*
+
+  smoke:
+    name: install on ${{ matrix.image }}
+    needs: [package]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "debian:trixie", format: deb, glob: "*_all.deb" }
+          - { image: "ubuntu:24.04", format: deb, glob: "*_all.deb" }
+          - { image: "fedora:latest", format: rpm, glob: "*.noarch.rpm" }
+          - { image: "archlinux:latest", format: arch, glob: "*-any.pkg.tar.zst" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: "package-${{ matrix.format }}", path: pkg }
+      - name: Package loads in the distribution's Mopidy
+        run: |
+          file=$(cd pkg && ls ${{ matrix.glob }})
+          docker run --rm -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg:ro" ${{ matrix.image }} \
+            sh /src/packaging/scripts/smoke-test.sh "/pkg/$file"
+      - name: install.sh --local --tidal
+        # Arch's mopidy-local and mopidy-tidal come from the AUR (no helper in CI).
+        if: matrix.format != 'arch'
+        run: |
+          file=$(cd pkg && ls ${{ matrix.glob }})
+          docker run --rm -e GOODIES_PACKAGE="/pkg/$file" -v "$PWD:/src:ro" -v "$PWD/pkg:/pkg:ro" ${{ matrix.image }} sh -c '
+            (apt-get update -qq && apt-get install -y -qq curl) >/dev/null 2>&1 || dnf install -y -q curl >/dev/null 2>&1
+            sh /src/install.sh --local --tidal --yes && sh /src/packaging/scripts/verify-install.sh'
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [sdist, smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts, merge-multiple: true }
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" * --repo "$GITHUB_REPOSITORY" \
+            --title "mopidy-goodies ${{ needs.sdist.outputs.version }}" --generate-notes
