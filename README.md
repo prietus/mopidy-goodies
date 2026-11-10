@@ -480,6 +480,30 @@ compilations. `404` if Tidal has no available track for it. Cached in memory.
 }
 ```
 
+### Tidal lyrics
+
+```
+GET    /goodies/tidal/lyrics?uri=<track URI>
+```
+
+Tidal's own lyrics for a track: the plain `text` and, when Tidal has them,
+`subtitles` — the same lines with `[mm:ss.xx]` timestamps (LRC, line by line;
+there is no word-by-word timing). `provider` is passed through for attribution.
+The URI can be `tidal:track:…` or `local:track:…`; local files are matched to
+the same recording on Tidal as for radio (ISRC tag, else artist + title).
+`404` when Tidal has no lyrics for it; `502` if Tidal's lookup fails (e.g. rate
+limit). Cached in memory, misses included.
+
+```json
+{
+  "track_id": "534050397",
+  "text": "Is this the real life?\nIs this just fantasy?",
+  "subtitles": "[00:00.50] Is this the real life?\n[00:04.10] Is this just fantasy?",
+  "provider": "MUSIXMATCH",
+  "right_to_left": false
+}
+```
+
 ### Tidal radio
 
 ```

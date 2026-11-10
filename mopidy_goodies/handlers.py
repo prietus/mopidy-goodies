@@ -18,6 +18,7 @@ ext_name as prefix). Three feature groups:
       GET    /goodies/tidal/artists/<id>/bio
       GET    /goodies/tidal/isrc/<ISRC>
       GET    /goodies/tidal/radio?uri=<track or artist URI>&limit=100
+      GET    /goodies/tidal/lyrics?uri=<track URI>
 
   Tidal playlists (fresh from Tidal on every call):
 
@@ -90,6 +91,8 @@ from .isrc import NoTracks, tracks_by_isrc
 from . import playlists
 from .radio import NoSeed
 from .radio import radio as tidal_radio
+from .lyrics import LyricsNotFound
+from .lyrics import lyrics as tidal_lyrics
 from .texts import TextNotFound, album_review, artist_bio
 from . import local
 from .library import SCANNER, local_enabled
@@ -128,6 +131,7 @@ def factory(config, core):
         (r"/tidal/artists/(\d+)/bio", TidalArtistBioHandler, common),
         (r"/tidal/isrc/([A-Za-z0-9]{12})", TidalIsrcHandler, common),
         (r"/tidal/radio", TidalRadioHandler, common),
+        (r"/tidal/lyrics", TidalLyricsHandler, common),
         (r"/tidal/playlists", TidalPlaylistsHandler, common),
         (r"/tidal/playlists/([0-9a-fA-F-]{36})", TidalPlaylistHandler, common),
         (r"/tidal/playlists/([0-9a-fA-F-]{36})/tracks", TidalPlaylistTracksHandler, common),
@@ -218,6 +222,7 @@ class HealthHandler(_Base):
                 "texts": True,
                 "isrc": True,
                 "radio": True,
+                "lyrics": True,
                 "playlists": True,
                 "stats": True,
                 "audio": True,
@@ -324,6 +329,29 @@ class TidalRadioHandler(_Base):
         except Exception as e:  # ObjectNotFound for unknown ids, Tidal errors
             logger.warning("goodies: Tidal radio for %s failed: %s", uri, e)
             raise HTTPError(404, reason=f"no Tidal radio for {uri}")
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(result))
+
+
+class TidalLyricsHandler(_Base):
+    """Tidal's lyrics (plain text and LRC subtitles) for a track URI, local or Tidal."""
+
+    async def get(self):
+        from tornado.ioloop import IOLoop
+
+        uri = self.get_query_argument("uri", "")
+        if not uri:
+            raise HTTPError(400, reason="missing 'uri'")
+        session = self._session()
+        try:
+            result = await IOLoop.current().run_in_executor(
+                None, tidal_lyrics, session, self.core, self.config, uri
+            )
+        except LyricsNotFound:
+            raise HTTPError(404, reason=f"no Tidal lyrics for {uri}")
+        except Exception as e:  # rate limits and other Tidal errors
+            logger.warning("goodies: Tidal lyrics for %s failed: %s", uri, e)
+            raise HTTPError(502, reason="Tidal lyrics lookup failed")
         self.set_header("Content-Type", "application/json")
         self.write(json.dumps(result))
 
