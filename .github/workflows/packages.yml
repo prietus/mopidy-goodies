@@ -72,7 +72,10 @@ jobs:
       matrix:
         include:
           - { format: deb, image: "debian:trixie", script: build-debian.sh }
-          - { format: rpm, image: "fedora:latest", script: build-fedora.sh }
+          # Pinned: fedora:latest (45) moved to Python 3.15 before its Mopidy was
+          # rebuilt for it, so nothing there provides python3.15dist(mopidy).
+          # Back to fedora:latest once Fedora 45 ships a Mopidy for 3.15.
+          - { format: rpm, image: "fedora:44", script: build-fedora.sh }
           - { format: arch, image: "archlinux:latest", script: build-arch.sh }
     steps:
       - uses: actions/checkout@v4
@@ -98,7 +101,7 @@ jobs:
         include:
           - { image: "debian:trixie", format: deb, glob: "*_all.deb" }
           - { image: "ubuntu:24.04", format: deb, glob: "*_all.deb" }
-          - { image: "fedora:latest", format: rpm, glob: "*.noarch.rpm" }
+          - { image: "fedora:44", format: rpm, glob: "*.noarch.rpm" }
           - { image: "archlinux:latest", format: arch, glob: "*-any.pkg.tar.zst" }
     steps:
       - uses: actions/checkout@v4

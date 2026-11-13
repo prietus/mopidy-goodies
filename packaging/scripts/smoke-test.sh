@@ -14,7 +14,10 @@ case "$pkg" in
     dnf install -y -q curl "$pkg" >/dev/null ;;
   *.pkg.tar.zst)
     # No download sandbox: it can't start under emulation, and this container is throwaway.
-    pacman --disable-sandbox -Sy --noconfirm -q >/dev/null
+    # Full upgrade first: installing on top of a stale image is a partial
+    # upgrade, and dependencies pulled at today's versions can then conflict
+    # with what the image ships (openssl-3 vs. openssl's libcrypto.so.3).
+    pacman --disable-sandbox -Syu --noconfirm -q >/dev/null
     pacman --disable-sandbox -U --noconfirm "$pkg" >/dev/null
     pacman --disable-sandbox -S --noconfirm --needed -q curl >/dev/null ;;
 esac
